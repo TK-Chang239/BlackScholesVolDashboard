@@ -22,6 +22,7 @@ from scipy.stats import norm
 _MIN_VOL = 1e-4
 _MAX_VOL = 5.0
 _EPS = 1e-12
+_TARGET_VOL_ACCURACY = 1e-6
 
 
 def _validate_kind(kind: str) -> None:
@@ -36,7 +37,8 @@ def _as_arrays(*vals):
 def _invalid_mask(S, K, T, r, sigma, q):
     return (
         (S <= 0) | (K <= 0) | (T < 0) | (sigma < 0)
-        | ~np.isfinite(S + K + T + r + sigma + q)
+        | ~(np.isfinite(S) & np.isfinite(K) & np.isfinite(T) & np.isfinite(r)
+           & np.isfinite(sigma) & np.isfinite(q))
     )
 
 
@@ -109,7 +111,13 @@ def implied_vol(price, S, K, T, r, q=0.0, kind="call", tol=1e-10, max_iter=20):
        bounds, no convergence). No sign change on the bracket -> NaN.
 
     tol is in price space: resulting sigma accuracy is ~ tol/vega, so a
-    tight price tolerance is what buys 1e-6 sigma recovery off-ATM.
+    tight price tolerance is what buys 1e-6 sigma recovery off-ATM. The
+    vega floor below is derived to guarantee _TARGET_VOL_ACCURACY given
+    this tol — passing a much looser tol shrinks the trustworthy-vega
+    region accordingly. The post-Brent vega gate deliberately reuses this
+    same Newton floor, which is roughly four orders of magnitude stricter
+    than Brent's own plateau-width accuracy limit (ULP(price)/vega); that
+    is conservative by choice, not an oversight.
     """
     _validate_kind(kind)
     arrs = np.broadcast_arrays(*_as_arrays(price, S, K, T, r, q))
@@ -125,7 +133,8 @@ def implied_vol(price, S, K, T, r, q=0.0, kind="call", tol=1e-10, max_iter=20):
             lower, upper = np.maximum(disc_k - disc_s, 0.0), disc_k
         solvable = (
             np.isfinite(price) & (price > 0) & (price >= lower) & (price <= upper)
-            & (S > 0) & (K > 0) & (T > 0) & np.isfinite(S + K + T + r + q)
+            & (S > 0) & (K > 0) & (T > 0)
+            & (np.isfinite(S) & np.isfinite(K) & np.isfinite(T) & np.isfinite(r) & np.isfinite(q))
         )
 
         # Brenner-Subrahmanyam: near-exact ATM, decent start elsewhere.
@@ -139,7 +148,7 @@ def implied_vol(price, S, K, T, r, q=0.0, kind="call", tol=1e-10, max_iter=20):
         # "converge" with 0.1+ sigma error, well outside the SPEC's 1e-6
         # corner-contract promise. Require vega large enough that tol/vega
         # is itself within the 1e-6 target before trusting a diff-only stop.
-        vega_floor = tol / 1e-6
+        vega_floor = tol / _TARGET_VOL_ACCURACY
         for _ in range(max_iter):
             if not active.any():
                 break

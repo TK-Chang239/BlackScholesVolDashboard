@@ -86,3 +86,8 @@ class TestVectorization:
         price = bs_price(S=S0, K=105.0, T=0.5, r=R, sigma=0.25, q=Q, kind="put")
         out = implied_vol(price, S=S0, K=105.0, T=0.5, r=R, q=Q, kind="put")
         assert isinstance(out, float) and abs(out - 0.25) < 1e-6
+
+
+def test_bad_kind_raises():
+    with pytest.raises(ValueError):
+        implied_vol(5.0, S=S0, K=100.0, T=0.5, r=R, q=Q, kind="both")

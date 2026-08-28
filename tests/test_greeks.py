@@ -89,3 +89,8 @@ class TestShapes:
     def test_vectorized_output_shape(self):
         g = greeks(S=100.0, K=np.linspace(70, 130, 13), T=0.25, r=0.04, sigma=0.2, kind="put")
         assert g["delta"].shape == (13,)
+
+
+def test_bad_kind_raises():
+    with pytest.raises(ValueError):
+        greeks(S=100.0, K=100.0, T=0.5, r=0.04, sigma=0.2, kind="cal")
