@@ -105,6 +105,22 @@ the other two showing the free-key throttle message (25 requests/day,
 paywalls *inside* a 200 response, so any provider built on it must parse
 the body, never trust the status code.
 
+### 2026-08-28 — Addendum: Massive (ex-Polygon) probe (`scripts/verify_massive.py`)
+
+The old `api.polygon.io` domain still answers post-rebrand. Free-tier
+findings: reference contracts ✅ (strikes/expiries/tickers, paginated);
+**chain snapshot ❌ 403 `NOT_AUTHORIZED`** ("You are not entitled to this
+data. Please upgrade your plan at https://massive.com/pricing");
+per-contract previous-day aggregates ✅ (`o,h,l,c,v,vw,n` — OHLC only,
+**no bid/ask**); historical aggregate ranges authorized. Consequences:
+the free tier's only daily-fetch path is one call per contract (~400–700
+contracts ≈ 80–140 min/day at 5 calls/min) and yields no bid/ask —
+which structurally breaks P7's beyond-the-spread violation test and
+question 8. Verdict: free tier insufficient for this spec; the Options
+Starter tier plausibly unlocks the snapshot (with bid/ask, IV, OI) and
+~2 years of history — must be re-verified with this same script after
+any upgrade before Phase 2 builds on it.
+
 ### 2026-08-28 — Addendum: yfinance spike (throwaway)
 
 A five-line yfinance spike confirmed the free path works: 29 SPY
