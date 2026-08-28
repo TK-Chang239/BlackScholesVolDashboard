@@ -216,3 +216,87 @@ class TestSessionDateLabeling:
         assert not storage.chain_exists(stale_session, tmp_path)
         assert not storage.chain_exists(TODAY, tmp_path)
         assert not (tmp_path / "docs" / "status.json").exists()
+
+
+class TestRenderStage:
+    def test_run_renders_page_and_reports_convergence(self, tmp_path):
+        status = run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "<html" in page and "vol-lens" in page
+        # the vendored bundle inlines an unused default (topojsonURL) that
+        # literally contains this substring; strip it before checking that
+        # *our own markup* makes no live external CDN reference (mirrors
+        # test_render.py::TestPage::test_self_contained_no_external_refs).
+        from src.render.page import _BUNDLE
+        own_markup = page.replace(_BUNDLE.read_text(), "")
+        assert "https://cdn.plot.ly" not in own_markup
+        assert 0.0 <= status["iv_convergence"] <= 1.0
+        assert status["panels_rendered"] == ["P2", "P3"]
+        # status still written last and consistent with the page
+        on_disk = json.loads((tmp_path / "docs" / "status.json").read_text())
+        assert on_disk == status
+
+    def test_yesterday_overlay_uses_prior_chain_when_present(self, tmp_path):
+        # compute_term_structure's ATM interpolation (src/analytics/term_structure.py
+        # ::_interp_at) needs a converged IV strictly at-or-below AND strictly above
+        # spot; the shared single-strike chain_frame() fixture (700 only, always below
+        # spot) can never straddle it, so it can never yield a non-empty term
+        # structure regardless of how run() is wired. Give the FIRST (prior-day) run a
+        # two-strike chain that brackets spot instead -- local to this test only;
+        # chain_frame()/FakeLive/FakeFallback used by every other test are untouched.
+        from src.models.black_scholes import bs_price
+
+        def bracketing_chain(spot, expiry, dte):
+            T = dte / 365.0
+            rows = []
+            for strike in (spot - 20.0, spot + 20.0):
+                for kind in ("call", "put"):
+                    price = float(bs_price(spot, strike, T, 0.0415, 0.20, 0.0098, kind))
+                    rows.append({
+                        "expiry": expiry, "strike": strike, "kind": kind,
+                        "bid": price - 0.05, "ask": price + 0.05, "mid": price,
+                        "close": price, "volume": 100, "open_interest": 500,
+                        "vendor_iv": 0.20, "source": "yfinance",
+                    })
+            return pd.DataFrame(rows)
+
+        class BracketingLive:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return bracketing_chain(spot, dt.date(2026, 9, 18), 21)
+
+        run(FakeEODHD(), BracketingLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        # second run for the "next" session: underlying now ends a day later
+        class NextDayEODHD(FakeEODHD):
+            def get_underlying_history(self, symbol, start=None):
+                df = underlying_frame()
+                extra = pd.DataFrame({"date": [TODAY + dt.timedelta(days=1)],
+                                      "close": [772.0], "adjusted_close": [772.0],
+                                      "volume": [1]})
+                return pd.concat([df, extra], ignore_index=True)
+        status = run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(),
+                     tmp_path, today=TODAY + dt.timedelta(days=1))
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "yesterday" in page
+        assert status["snapshot_date"] == (TODAY + dt.timedelta(days=1)).isoformat()
+
+    def test_render_failure_leaves_page_and_status_untouched(self, tmp_path, monkeypatch):
+        run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        page_before = (tmp_path / "docs" / "index.html").read_text()
+        status_before = (tmp_path / "docs" / "status.json").read_text()
+        import src.run_daily as rd
+        monkeypatch.setattr(rd, "render_page",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        class NextDayEODHD(FakeEODHD):
+            def get_underlying_history(self, symbol, start=None):
+                df = underlying_frame()
+                extra = pd.DataFrame({"date": [TODAY + dt.timedelta(days=1)],
+                                      "close": [772.0], "adjusted_close": [772.0],
+                                      "volume": [1]})
+                return pd.concat([df, extra], ignore_index=True)
+        with pytest.raises(RuntimeError):
+            run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(),
+                tmp_path, today=TODAY + dt.timedelta(days=1))
+        assert (tmp_path / "docs" / "index.html").read_text() == page_before
+        assert (tmp_path / "docs" / "status.json").read_text() == status_before
+        # and no new chain file landed for the failed session either
+        assert not storage.chain_exists(TODAY + dt.timedelta(days=1), tmp_path)
