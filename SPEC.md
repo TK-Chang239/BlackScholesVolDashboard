@@ -99,9 +99,10 @@ quotes remain higher-tier):
   panels (no historical bid/ask exists on this tier). Its chain snapshot
   (close, OHLC, OI, vendor IV/Greeks on liquid strikes; no bid/ask) is
   the automatic fallback when the yfinance fetch fails: those days store
-  chains without bid/ask and are flagged in `status.json`. Vendor
-  IV/Greeks are stored for cross-checking but **never** used in our
-  computations.
+  chains without bid/ask and are flagged in `status.json`. Vendor IV is
+  stored (one `vendor_iv` column) for cross-checking but **never** used
+  in our computations; vendor Greeks are not stored — yfinance has none
+  and no panel consumes them.
 - Underlying EOD history: SPY adjusted close (for spot + realized vol).
 - Risk-free rate: 3-month US T-bill (EODHD bill-rate endpoint or a static
   monthly-updated value in `config.yaml` as fallback — precision here
