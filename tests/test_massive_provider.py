@@ -49,6 +49,9 @@ class TestSnapshotFallback:
         assert call["vendor_iv"] == pytest.approx(0.213)
         assert np.isnan(call["bid"]) and np.isnan(call["ask"]) and np.isnan(call["mid"])
         assert (df["source"] == "massive-fallback").all()
+        # the API key travels as a Bearer header, never as an apiKey query param
+        assert s.get.call_args[1]["headers"]["Authorization"].startswith("Bearer ")
+        assert "apiKey" not in s.get.call_args[1]["params"]
 
     def test_pagination_follows_next_url(self):
         page1 = dict(load("massive_snapshot_page.json"))

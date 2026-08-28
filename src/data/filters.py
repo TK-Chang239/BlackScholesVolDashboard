@@ -28,7 +28,7 @@ def filter_chain(df: pd.DataFrame, spot: float, today: dt.date, cfg: dict) -> pd
     keep = (moneyness >= f["moneyness_min"]) & (moneyness <= f["moneyness_max"])
 
     live = df["source"].isin(LIVE_SOURCES)
-    liquid_live = (df["bid"] > 0) & df["ask"].notna()
+    liquid_live = (df["bid"] > 0) & (df["ask"] > 0)
     liquid_close = (df["volume"].fillna(0) > 0) | (df["open_interest"].fillna(0) > 0)
     keep &= liquid_live.where(live, liquid_close)
 

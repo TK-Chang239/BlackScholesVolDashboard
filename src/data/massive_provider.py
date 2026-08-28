@@ -31,13 +31,13 @@ class MassiveProvider:
         self._session = session or requests.Session()
 
     def _get_json(self, url: str, **params):
-        params.setdefault("apiKey", self._key)
+        headers = {"Authorization": f"Bearer {self._key}"}
         # Retry only transport-level failures (timeouts, connection resets).
         # A bad body status (e.g. a NOT_AUTHORIZED paywall) is not a transient
         # condition -- it must fail immediately, never be retried.
         for attempt in range(3):
             try:
-                r = self._session.get(url, params=params, timeout=TIMEOUT)
+                r = self._session.get(url, params=params, headers=headers, timeout=TIMEOUT)
                 break
             except requests.exceptions.RequestException:
                 if attempt == 2:

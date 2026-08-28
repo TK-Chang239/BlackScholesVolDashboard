@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from src.data.base import UNDERLYING_COLUMNS
 from src.data.envfile import get_secret, load_env
@@ -91,3 +92,21 @@ class TestRates:
         s = fake_session([])
         p = EODHDProvider("tok", CFG, session=s)
         assert p.get_dividend_yield(770.0) == 0.013
+
+
+class TestHTTPErrorSecrecy:
+    def test_http_error_does_not_leak_token_or_query_string(self):
+        fake_token = "SECRET_TOK_9f2c"
+        s = MagicMock()
+        r = MagicMock()
+        r.status_code = 401
+        r.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            f"401 Client Error: Unauthorized for url: https://eodhd.com/api/eod/"
+            f"SPY.US?api_token={fake_token}&fmt=json"
+        )
+        s.get.return_value = r
+        p = EODHDProvider(fake_token, CFG, session=s)
+        with pytest.raises(RuntimeError) as excinfo:
+            p.get_underlying_history("SPY")
+        assert fake_token not in str(excinfo.value)
+        assert "EODHD HTTP 401" in str(excinfo.value)

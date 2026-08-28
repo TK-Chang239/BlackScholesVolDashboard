@@ -26,7 +26,13 @@ class EODHDProvider:
         params.setdefault("api_token", self._token)
         params.setdefault("fmt", "json")
         r = self._session.get(f"{BASE}/{path}", params=params, timeout=TIMEOUT)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            # Never let the query string (it carries api_token) leak into the
+            # error message -- requests embeds the request URL in HTTPError's
+            # default text, so wrap instead of letting it propagate verbatim.
+            raise RuntimeError(f"EODHD HTTP {r.status_code} for {path}") from e
         return r.json()
 
     def get_underlying_history(self, symbol: str, start: dt.date | None = None) -> pd.DataFrame:

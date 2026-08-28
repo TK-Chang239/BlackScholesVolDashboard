@@ -83,6 +83,7 @@ class TestFilterChain:
         df = make_raw([
             [EXP, 700.0, "call", 0.0, 1.2, np.nan, 1.1, 10, 10, 0.2, "yfinance"],     # bid=0
             [EXP, 710.0, "call", 1.0, np.nan, np.nan, 1.1, 10, 10, 0.2, "yfinance"],  # no ask
+            [EXP, 715.0, "call", 1.0, 0.0, np.nan, 1.1, 10, 10, 0.2, "yfinance"],     # ask=0
             [EXP, 720.0, "call", 1.0, 1.2, 1.1, 1.1, 0, 0, 0.2, "yfinance"],          # keeps: vol/OI irrelevant live
         ])
         got = filter_chain(df, SPOT, TODAY, CFG)

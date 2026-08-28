@@ -25,8 +25,12 @@ def real_cfg():
 
 
 def underlying_frame():
+    return underlying_frame_ending(TODAY)
+
+
+def underlying_frame_ending(end_date):
     return pd.DataFrame({
-        "date": [dt.date(2026, 8, 27), TODAY],
+        "date": [end_date - dt.timedelta(days=1), end_date],
         "close": [771.1, 770.0],
         "adjusted_close": [771.1, 770.0],
         "volume": [39000000, 40500000],
@@ -141,16 +145,29 @@ class TestDailyRun:
         # SPEC 2.1's no-partial-write guarantee covers only the chain file and status.json
         assert (tmp_path / "data" / "underlying.parquet").exists()
 
-    def test_empty_filtered_chain_is_a_failure(self, tmp_path):
+    def test_empty_filtered_live_chain_falls_back(self, tmp_path):
         class EmptyLive:
             def get_option_chain(self, symbol, snapshot_date, spot, cfg):
                 return chain_frame("yfinance").iloc[0:0]
-        class DeadFallback:
-            def get_option_chain(self, *a, **k):
-                raise RuntimeError("down")
+        fallback = FakeFallback()
+        status = run(FakeEODHD(), EmptyLive(), fallback, real_cfg(), tmp_path, today=TODAY)
+        assert fallback.called
+        assert status["source"] == "massive-fallback"
+        assert storage.chain_exists(TODAY, tmp_path)
+        stored = pd.read_parquet(storage.chain_path(TODAY, tmp_path))
+        assert (stored["source"] == "massive-fallback").all()
+
+    def test_both_paths_empty_is_a_failure(self, tmp_path):
+        class EmptyLive:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return chain_frame("yfinance").iloc[0:0]
+        class EmptyFallback:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return chain_frame("massive-fallback").iloc[0:0]
         with pytest.raises(RuntimeError):
-            run(FakeEODHD(), EmptyLive(), DeadFallback(), real_cfg(), tmp_path, today=TODAY)
+            run(FakeEODHD(), EmptyLive(), EmptyFallback(), real_cfg(), tmp_path, today=TODAY)
         assert not storage.chain_exists(TODAY, tmp_path)
+        assert not (tmp_path / "docs" / "status.json").exists()
 
     def test_late_provider_failure_writes_no_chain_or_status(self, tmp_path):
         """Regression: late provider calls (get_risk_free_rate, etc) must happen
@@ -164,5 +181,38 @@ class TestDailyRun:
                 return 0.0098
         with pytest.raises(RuntimeError):
             run(BrokenEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert not storage.chain_exists(TODAY, tmp_path)
+        assert not (tmp_path / "docs" / "status.json").exists()
+
+
+class TestSessionDateLabeling:
+    """snapshot_date must be the market session the underlying describes,
+    never wall-clock `today` — matters off-hours and under a cron that runs
+    before the session it's labeling has fully rolled over."""
+
+    def test_labels_with_prior_session_when_underlying_lags_today(self, tmp_path):
+        prior_session = TODAY - dt.timedelta(days=1)
+
+        class LaggingEODHD(FakeEODHD):
+            def get_underlying_history(self, symbol, start=None):
+                return underlying_frame_ending(prior_session)
+
+        fallback = FakeFallback()
+        status = run(LaggingEODHD(), FakeLive(), fallback, real_cfg(), tmp_path, today=TODAY)
+        assert not fallback.called
+        assert status["snapshot_date"] == prior_session.isoformat()
+        assert storage.chain_exists(prior_session, tmp_path)
+        assert not storage.chain_exists(TODAY, tmp_path)
+
+    def test_stale_underlying_raises_and_writes_nothing(self, tmp_path):
+        stale_session = TODAY - dt.timedelta(days=10)
+
+        class StaleEODHD(FakeEODHD):
+            def get_underlying_history(self, symbol, start=None):
+                return underlying_frame_ending(stale_session)
+
+        with pytest.raises(RuntimeError):
+            run(StaleEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert not storage.chain_exists(stale_session, tmp_path)
         assert not storage.chain_exists(TODAY, tmp_path)
         assert not (tmp_path / "docs" / "status.json").exists()
