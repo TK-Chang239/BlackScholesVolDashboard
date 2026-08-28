@@ -1,0 +1,27 @@
+{
+  "status": "OK",
+  "results": [
+    {
+      "details": {"ticker": "O:SPY260918C00700000", "contract_type": "call",
+                  "expiration_date": "2026-09-18", "strike_price": 700},
+      "day": {"close": 71.3, "volume": 120},
+      "open_interest": 5000,
+      "implied_volatility": 0.213,
+      "greeks": {"delta": 0.91}
+    },
+    {
+      "details": {"ticker": "O:SPY260918P00700000", "contract_type": "put",
+                  "expiration_date": "2026-09-18", "strike_price": 700},
+      "day": {"close": 2.05, "volume": 80},
+      "open_interest": 3100,
+      "implied_volatility": 0.242
+    },
+    {
+      "details": {"ticker": "O:SPY260904C00770000", "contract_type": "call",
+                  "expiration_date": "2026-09-04", "strike_price": 770},
+      "day": {"close": 5.1, "volume": 900},
+      "open_interest": 7000,
+      "implied_volatility": 0.11
+    }
+  ]
+}

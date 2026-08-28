@@ -1,0 +1,5 @@
+[
+  {"date": "2026-08-26", "open": 768.1, "high": 771.0, "low": 767.2, "close": 770.4, "adjusted_close": 770.4, "volume": 41000000},
+  {"date": "2026-08-27", "open": 770.5, "high": 772.3, "low": 769.0, "close": 771.1, "adjusted_close": 771.1, "volume": 39000000},
+  {"date": "2026-08-28", "open": 771.2, "high": 773.0, "low": 769.8, "close": 770.0, "adjusted_close": 770.0, "volume": 40500000}
+]

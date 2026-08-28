@@ -1,0 +1,11 @@
+{
+  "status": "OK",
+  "results": [
+    {"ticker": "O:SPY260918C00700000", "contract_type": "call",
+     "expiration_date": "2026-09-18", "strike_price": 700, "underlying_ticker": "SPY"},
+    {"ticker": "O:SPY260918P00700000", "contract_type": "put",
+     "expiration_date": "2026-09-18", "strike_price": 700, "underlying_ticker": "SPY"},
+    {"ticker": "O:SPY260904C00770000", "contract_type": "call",
+     "expiration_date": "2026-09-04", "strike_price": 770, "underlying_ticker": "SPY"}
+  ]
+}
