@@ -113,7 +113,7 @@ in [`SPEC.md`](SPEC.md).
 - [x] Phase 0 — repo scaffold, data-access verification
 - [x] Phase 1 — Black-Scholes pricer + Greeks, fully unit-tested
 - [x] Phase 2 — data pipeline + history backfill
-- [ ] Phase 3 — IV solver; smile + term-structure panels live on Pages
+- [x] Phase 3 — IV solver; smile + term-structure panels live on Pages
 - [ ] Phase 4 — implied-vs-realized, sensitivity, Greeks panels
 - [ ] Phase 5 — skew series + parity checker
 - [ ] Phase 6 — delta-hedged P&L simulation
