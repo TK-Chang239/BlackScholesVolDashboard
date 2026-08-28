@@ -94,6 +94,29 @@ This script and this record are reusable either way — rerun it after any
 plan change to fill in the field inventory and history-depth sections
 above.
 
+### 2026-08-28 — Addendum: Alpha Vantage probe (`scripts/verify_alphavantage.py`)
+
+Alpha Vantage was tried next on the belief that `HISTORICAL_OPTIONS` was
+free-tier. It is not anymore: all four probes (latest session, ~6 months
+back, ~5 years back, holiday) returned HTTP 200 with **no data** and an
+`Information` body — two explicitly saying "This is a premium endpoint,"
+the other two showing the free-key throttle message (25 requests/day,
+1/second). Note the vendor pattern: Alpha Vantage signals both errors and
+paywalls *inside* a 200 response, so any provider built on it must parse
+the body, never trust the status code.
+
+### 2026-08-28 — Addendum: yfinance spike (throwaway)
+
+A five-line yfinance spike confirmed the free path works: 29 SPY
+expirations listed, per-expiry chains with `strike, bid, ask, lastPrice,
+volume, openInterest, impliedVolatility` (~80 call rows on a mid-dated
+expiry), live spot via `fast_info`. ATM quotes looked sane (penny-wide
+markets, positive OI/volume). Known limitations for Phase 2 design:
+current chain only — **no historical backfill exists on this path** — and
+it is an unofficial API scraping Yahoo, so breakage is a when, not an if
+(the fetch stage must fail loudly and skip the day, per SPEC §2.1's
+failure policy). Data-source decision for Phase 2 pending.
+
 ## Entries
 
 *(Dated entries appended as each piece of the model layer is built.)*
