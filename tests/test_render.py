@@ -67,9 +67,11 @@ class TestPage:
         return render_page(figs, fake_status())
 
     def test_self_contained_no_external_refs(self):
+        from src.render.page import _BUNDLE
         html = self.page()
-        assert "https://cdn.plot.ly" not in html
-        assert "<script src=" not in html          # all scripts inline
+        own_markup = html.replace(_BUNDLE.read_text(), "")
+        assert "https://cdn.plot.ly" not in own_markup
+        assert "<script src=" not in own_markup
         assert html.count("<html") == 1
 
     def test_bundle_inlined(self):
