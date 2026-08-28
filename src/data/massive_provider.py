@@ -8,6 +8,7 @@ Starter-tier facts (verified 2026-08-28, see LEARNING_LOG Phase 0):
 - errors and paywalls arrive inside HTTP 200 bodies: check body["status"].
 """
 import datetime as dt
+import time
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,7 @@ from src.data.filters import select_expiries
 
 BASE = "https://api.polygon.io"
 TIMEOUT = 30
+RETRY_SLEEPS = (2, 8)  # seconds between attempts 1->2 and 2->3 (3 attempts total)
 
 PRE_FILTER_COLUMNS = ["expiry", "strike", "kind", "bid", "ask", "mid", "close",
                       "volume", "open_interest", "vendor_iv", "source"]
@@ -30,7 +32,17 @@ class MassiveProvider:
 
     def _get_json(self, url: str, **params):
         params.setdefault("apiKey", self._key)
-        r = self._session.get(url, params=params, timeout=TIMEOUT)
+        # Retry only transport-level failures (timeouts, connection resets).
+        # A bad body status (e.g. a NOT_AUTHORIZED paywall) is not a transient
+        # condition -- it must fail immediately, never be retried.
+        for attempt in range(3):
+            try:
+                r = self._session.get(url, params=params, timeout=TIMEOUT)
+                break
+            except requests.exceptions.RequestException:
+                if attempt == 2:
+                    raise
+                time.sleep(RETRY_SLEEPS[attempt])
         body = r.json()
         status = body.get("status") if isinstance(body, dict) else None
         if r.status_code != 200 or status not in ("OK", "DELAYED"):

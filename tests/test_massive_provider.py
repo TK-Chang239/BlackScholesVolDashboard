@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 import pytest
+from requests.exceptions import ReadTimeout
 
 from src.data.massive_provider import MassiveProvider
 
@@ -99,3 +100,41 @@ class TestHistoricalBackfill:
         p = MassiveProvider("key", CFG, session=s)
         df = p.get_historical_chain("SPY", TODAY, spot=770.0, cfg=CFG)
         assert len(df) == 1  # the no-trade contract produced no row
+
+
+class TestRetry:
+    """Transport-level retry in _get_json: retry only RequestException, never
+    the RuntimeError raised for a bad body status (paywalls fail immediately)."""
+
+    def test_retries_transport_errors_then_succeeds(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr("src.data.massive_provider.time.sleep", lambda s: sleeps.append(s))
+        good = MagicMock()
+        good.status_code = 200
+        good.json.return_value = load("massive_snapshot_page.json")
+        s = MagicMock()
+        s.get.side_effect = [ReadTimeout("boom"), ReadTimeout("boom"), good]
+        p = MassiveProvider("key", CFG, session=s)
+        df = p.get_option_chain("SPY", TODAY, spot=770.0, cfg=CFG)
+        assert s.get.call_count == 3
+        assert sleeps == [2, 8]
+        assert not df.empty
+
+    def test_exhausts_retries_and_propagates(self, monkeypatch):
+        monkeypatch.setattr("src.data.massive_provider.time.sleep", lambda s: None)
+        s = MagicMock()
+        s.get.side_effect = [ReadTimeout("boom"), ReadTimeout("boom"), ReadTimeout("boom")]
+        p = MassiveProvider("key", CFG, session=s)
+        with pytest.raises(ReadTimeout):
+            p.get_option_chain("SPY", TODAY, spot=770.0, cfg=CFG)
+        assert s.get.call_count == 3
+
+    def test_not_authorized_is_not_retried(self, monkeypatch):
+        def _no_sleep(_):
+            raise AssertionError("should not sleep — API-status errors are not retried")
+        monkeypatch.setattr("src.data.massive_provider.time.sleep", _no_sleep)
+        s = session_returning([{"status": "NOT_AUTHORIZED", "message": "upgrade"}])
+        p = MassiveProvider("key", CFG, session=s)
+        with pytest.raises(RuntimeError, match="NOT_AUTHORIZED"):
+            p.get_option_chain("SPY", TODAY, spot=770.0, cfg=CFG)
+        assert s.get.call_count == 1
