@@ -70,8 +70,9 @@ Four stages, strictly separated so each is testable alone:
   Mon–Fri US sessions). Also `workflow_dispatch` for manual runs.
 - **Publishing**: the workflow commits updated `data/` and `docs/` back to
   `main`; GitHub Pages serves the `docs/` folder. No servers, no cost.
-- **Secrets**: `EODHD_API_TOKEN` stored as a GitHub Actions secret. Never
-  in code, never in committed data.
+- **Secrets**: `EODHD_API_TOKEN` and `ALPHAVANTAGE_API_KEY` stored as
+  GitHub Actions secrets (locally in gitignored `.env`). Never in code,
+  never in committed data.
 - **Failure policy**: if the fetch fails (API down, holiday, rate limit),
   the job exits gracefully *without* committing, leaving yesterday's
   dashboard live. A `status.json` (last successful run, row counts) is
@@ -79,13 +80,18 @@ Four stages, strictly separated so each is testable alone:
 
 ### 2.2 Data layer (`src/data/`)
 
-**Primary source: EODHD.** Endpoints used:
+**Two vendors** (revised 2026-08-28: Phase 0 verification found the EODHD
+account has no options entitlement — marketplace endpoint 403s at the
+account level; legacy endpoint is dead. Underlying/dividends/rates all
+work on EODHD, so options move to Alpha Vantage and EODHD keeps the rest):
 
-- US options EOD: contracts + end-of-day quotes for SPY
-  (EODHD US Options API — verify plan/marketplace access in Phase 0;
-  confirm available fields: bid, ask, last, volume, open interest, and
-  whether vendor-computed IV/Greeks are present — if present, they are
-  stored for cross-checking but **never** used in our computations).
+- US options EOD: **Alpha Vantage `HISTORICAL_OPTIONS`** — full SPY chain
+  for a given date per call, free tier (~25 requests/day — ample for the
+  1-call/day pipeline; paces backfill, see below). Fields include bid,
+  ask, mark, last, volume, open interest, plus vendor-computed IV and
+  Greeks — stored for cross-checking but **never** used in our
+  computations. Verified by `scripts/verify_alphavantage.py` (Phase 0
+  addendum) before Phase 2 builds on it.
 - Underlying EOD history: SPY adjusted close (for spot + realized vol).
 - Risk-free rate: 3-month US T-bill (EODHD bill-rate endpoint or a static
   monthly-updated value in `config.yaml` as fallback — precision here
@@ -99,9 +105,10 @@ Four stages, strictly separated so each is testable alone:
 
 **Abstraction**: a single `DataProvider` interface
 (`get_option_chain(symbol, date)`, `get_underlying_history(symbol)`,
-`get_risk_free_rate()`), with `EODHDProvider` as the implementation and
-room for a `YFinanceProvider` fallback if plan limits bite. Nothing outside
-`src/data/` may know which vendor is in use.
+`get_risk_free_rate()`), composed from `AlphaVantageProvider` (chains) and
+`EODHDProvider` (underlying, dividends, rates). Nothing outside
+`src/data/` may know which vendor serves which call — the split is an
+implementation detail behind the interface.
 
 **Chain filtering** (keeps the repo small and the analysis honest):
 
@@ -120,10 +127,13 @@ instead replays raw chain files, so chains it needs are the one exception
 to the "old chains are prunable" rule.
 
 **Cold-start / backfill**: time-series panels (IV vs RV, skew history,
-hedge P&L) need history. Phase 2 includes a one-time backfill script pulling
-as much historical options EOD as the EODHD plan allows (target ≥ 6 months;
-if unavailable, panels state "accumulating since <date>" and grow live —
-which is itself honest and fine).
+hedge P&L) need history. Alpha Vantage's historical options reach back
+years, but the free tier's ~25 calls/day means a 6-month backfill
+(~126 trading days, 1 call each) runs over ~6 calendar days — the Phase 2
+backfill script must therefore be resumable (track last fetched date,
+stop before the daily cap, continue on next run). If depth or limits
+disappoint, panels state "accumulating since <date>" and grow live —
+which is itself honest and fine.
 
 ### 2.3 Model layer (`src/models/`) — hand-built, the heart of the project
 
@@ -405,7 +415,7 @@ them; heavy frameworks (no Streamlit/Dash — static HTML is the point).
 
 | Risk | Mitigation |
 |------|------------|
-| EODHD plan lacks options data / thin history | Phase 0 verifies before anything is built on it; `DataProvider` abstraction keeps a yfinance fallback one class away |
+| ~~EODHD plan lacks options data~~ **materialized 2026-08-28**: EODHD 403s on options | Options moved to Alpha Vantage `HISTORICAL_OPTIONS` (free tier); `DataProvider` abstraction absorbed the split exactly as designed. Residual risk: AV free-tier limits tighten → same abstraction, next vendor |
 | Time-series panels look empty for weeks | Backfill (Phase 2); "accumulating since" labels; hedge sim is a stateless replay over stored chain history (§3 P8), so its scatter starts as populated as the chain archive allows — no early start needed |
 | IV solver instability on junk quotes | Liquidity filters + no-arb bound checks + Brent safeguard; failures logged, counted in status.json, and written up |
 | Silent staleness (Action dies quietly) | Visible last-updated stamp + status.json; failed runs don't commit |
