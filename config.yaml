@@ -1,0 +1,28 @@
+# vol-lens configuration — single source of tunable parameters (SPEC §6)
+symbol: SPY
+exchange_suffix: ".US"          # EODHD ticker convention, e.g. SPY.US
+
+chain_filter:                   # SPEC §2.2
+  n_monthly_expiries: 6
+  dte_min: 7
+  dte_max: 365
+  moneyness_min: 0.70           # K/S
+  moneyness_max: 1.30
+
+target_dte:                     # SPEC §3
+  atm_panel: 30                 # P1/P4/P5/P6/P8 reference tenor
+  smile_expiries: [30, 90, 180] # P2
+
+realized_vol:                   # SPEC §2.3
+  windows: [20, 60]
+  annualization_days: 252
+
+rates:                          # SPEC §2.2 fallbacks (primary source is EODHD)
+  risk_free_fallback: 0.04      # 3m T-bill, update if EODHD source unavailable
+  dividend_yield_fallback: 0.013  # SPY trailing-12m yield fallback
+
+hedge_sim:                      # SPEC §3 P8
+  structure: short_straddle
+  entry_dte: 30
+  hedge_frequency: daily
+  transaction_cost_bps: 0       # v1; v2 adds a toggle
