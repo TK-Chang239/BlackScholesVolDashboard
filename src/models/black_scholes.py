@@ -65,3 +65,34 @@ def bs_price(S, K, T, r, sigma, q=0.0, kind="call"):
             price = disc_k * norm.cdf(-d2) - disc_s * norm.cdf(-d1)
         price = np.where(invalid, np.nan, price)
     return price if price.ndim else float(price)
+
+
+def greeks(S, K, T, r, sigma, q=0.0, kind="call"):
+    """Closed-form BSM Greeks as raw calculus derivatives.
+
+    theta is per YEAR, vega per UNIT vol, rho per UNIT rate — display
+    scaling (per-day, per-vol-point, per-1%) belongs to the render layer.
+    """
+    _validate_kind(kind)
+    S, K, T, r, sigma, q = _as_arrays(S, K, T, r, sigma, q)
+    with np.errstate(all="ignore"):
+        invalid = _invalid_mask(S, K, T, r, sigma, q)
+        d1, d2 = _d1_d2(S, K, T, sigma, r, q)
+        sqrt_t = np.sqrt(T)
+        pdf1 = norm.pdf(d1)
+        disc_q = np.exp(-q * T)
+        disc_r = np.exp(-r * T)
+        gamma = disc_q * pdf1 / np.maximum(S * sigma * sqrt_t, _EPS)
+        vega = S * disc_q * pdf1 * sqrt_t
+        common_theta = -S * disc_q * pdf1 * sigma / np.maximum(2 * sqrt_t, _EPS)
+        if kind == "call":
+            delta = disc_q * norm.cdf(d1)
+            theta = common_theta - r * K * disc_r * norm.cdf(d2) + q * S * disc_q * norm.cdf(d1)
+            rho = K * T * disc_r * norm.cdf(d2)
+        else:
+            delta = disc_q * (norm.cdf(d1) - 1.0)
+            theta = common_theta + r * K * disc_r * norm.cdf(-d2) - q * S * disc_q * norm.cdf(-d1)
+            rho = -K * T * disc_r * norm.cdf(-d2)
+        out = {"delta": delta, "gamma": gamma, "vega": vega, "theta": theta, "rho": rho}
+        out = {k: np.where(invalid, np.nan, v) for k, v in out.items()}
+    return {k: (v if v.ndim else float(v)) for k, v in out.items()}
