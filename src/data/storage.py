@@ -49,3 +49,12 @@ def write_status(status: dict, root: Path) -> Path:
     tmp.write_text(json.dumps(status, indent=2) + "\n")
     os.replace(tmp, path)
     return path
+
+
+def write_text(text: str, path: Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+    return path

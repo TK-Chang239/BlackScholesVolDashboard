@@ -1,17 +1,23 @@
-"""Daily orchestrator: fetch -> filter -> store -> status (SPEC 2.1/2.2).
+"""Daily orchestrator: fetch -> filter -> compute -> render -> store (SPEC 2.1/2.2).
 
 The ONLY place vendors are composed. Failure policy: any unrecoverable
-error raises, leaving no chain file and status.json untouched, so the
-Action exits nonzero and yesterday's dashboard stays live.
+error raises, leaving no chain file, docs/index.html, or status.json
+untouched, so the Action exits nonzero and yesterday's dashboard stays live.
 """
 import datetime as dt
 import sys
 from pathlib import Path
 
+import pandas as pd
 import yaml
 
+from src.analytics.chain_iv import compute_chain_iv
+from src.analytics.smile import compute_smile
+from src.analytics.term_structure import compute_term_structure
 from src.data import storage
 from src.data.filters import filter_chain
+from src.render.figures import build_smile_figure, build_term_structure_figure
+from src.render.page import render_page
 
 STALENESS_DAYS = 5
 
@@ -66,8 +72,27 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     risk_free_rate = eodhd.get_risk_free_rate()
     dividend_yield = eodhd.get_dividend_yield(spot, today=today, symbol=symbol)
 
-    # Now safe to write chain and status.
-    storage.write_chain(chain, session_date, root)
+    # ---- compute stage: everything derived before anything is written ----
+    chain_iv, iv_stats = compute_chain_iv(chain, risk_free_rate, dividend_yield)
+    smile = compute_smile(chain_iv, cfg)
+    ts_today = compute_term_structure(chain_iv)
+
+    ts_prev = None
+    prev_label = "previous session"
+    prior_dates = sorted(
+        d for d in sorted_underlying["date"] if d < session_date
+        and storage.chain_exists(d, root)
+    )
+    if prior_dates:
+        prev_chain = pd.read_parquet(storage.chain_path(prior_dates[-1], root))
+        prev_iv, _ = compute_chain_iv(prev_chain, risk_free_rate, dividend_yield)
+        ts_prev = compute_term_structure(prev_iv)
+        prev_label = f"prev session {prior_dates[-1].isoformat()}"
+        if not (prev_chain["source"] == "yfinance").all():
+            prev_label += " (close-based)"
+
+    figures = {"P2": build_smile_figure(smile, spot),
+               "P3": build_term_structure_figure(ts_today, ts_prev, previous_label=prev_label)}
 
     status = {
         "last_success_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -77,7 +102,14 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "spot": spot,
         "risk_free_rate": risk_free_rate,
         "dividend_yield": dividend_yield,
+        "iv_convergence": round(iv_stats["convergence"], 4),
+        "panels_rendered": sorted(figures),
     }
+    html = render_page(figures, status)
+
+    # ---- write stage: chain -> page -> status, each atomic ----
+    storage.write_chain(chain, session_date, root)
+    storage.write_text(html, Path(root) / "docs" / "index.html")
     storage.write_status(status, root)
     return status
 

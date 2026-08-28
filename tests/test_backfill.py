@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.data import storage
 from src.data.backfill import backfill
@@ -82,3 +83,44 @@ class TestBackfill:
         backfill(m, FakeEODHD(), cfg(), tmp_path,
                  start=DATES[1], end=DATES[1], log=lambda *_: None)
         assert [d for d, _ in m.requested] == [DATES[1]]
+
+
+class FailingMassive(FakeMassive):
+    def __init__(self, fail_on):
+        super().__init__()
+        self.fail_on = fail_on
+
+    def get_historical_chain(self, symbol, snapshot_date, spot, cfg):
+        if snapshot_date in self.fail_on:
+            self.requested.append((snapshot_date, spot))
+            raise RuntimeError("vendor exploded")
+        return super().get_historical_chain(symbol, snapshot_date, spot, cfg)
+
+
+class TestErrorIsolation:
+    def test_one_failing_day_does_not_abort_the_run(self, tmp_path):
+        m = FailingMassive(fail_on={DATES[1]})
+        logs = []
+        summary = backfill(m, FakeEODHD(), cfg(), tmp_path,
+                           start=DATES[0], end=DATES[-1], log=logs.append)
+        assert summary["dates_written"] == 2
+        assert summary["dates_failed"] == 1
+        assert storage.chain_exists(DATES[0], tmp_path)
+        assert not storage.chain_exists(DATES[1], tmp_path)
+        assert storage.chain_exists(DATES[2], tmp_path)
+        assert any("FAILED" in line for line in logs)
+
+    def test_failed_day_is_retriable_on_next_run(self, tmp_path):
+        backfill(FailingMassive(fail_on={DATES[1]}), FakeEODHD(), cfg(), tmp_path,
+                 start=DATES[0], end=DATES[-1], log=lambda *_: None)
+        summary = backfill(FakeMassive(), FakeEODHD(), cfg(), tmp_path,
+                           start=DATES[0], end=DATES[-1], log=lambda *_: None)
+        assert summary["dates_skipped"] == 2 and summary["dates_written"] == 1
+
+    def test_keyboard_interrupt_propagates(self, tmp_path):
+        class AbortingMassive(FakeMassive):
+            def get_historical_chain(self, *a, **k):
+                raise KeyboardInterrupt
+        with pytest.raises(KeyboardInterrupt):
+            backfill(AbortingMassive(), FakeEODHD(), cfg(), tmp_path,
+                     start=DATES[0], end=DATES[0], log=lambda *_: None)
