@@ -78,6 +78,7 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     ts_today = compute_term_structure(chain_iv)
 
     ts_prev = None
+    prev_label = "previous session"
     prior_dates = sorted(
         d for d in sorted_underlying["date"] if d < session_date
         and storage.chain_exists(d, root)
@@ -86,9 +87,12 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         prev_chain = pd.read_parquet(storage.chain_path(prior_dates[-1], root))
         prev_iv, _ = compute_chain_iv(prev_chain, risk_free_rate, dividend_yield)
         ts_prev = compute_term_structure(prev_iv)
+        prev_label = f"prev session {prior_dates[-1].isoformat()}"
+        if not (prev_chain["source"] == "yfinance").all():
+            prev_label += " (close-based)"
 
     figures = {"P2": build_smile_figure(smile, spot),
-               "P3": build_term_structure_figure(ts_today, ts_prev)}
+               "P3": build_term_structure_figure(ts_today, ts_prev, previous_label=prev_label)}
 
     status = {
         "last_success_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -99,7 +103,7 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "risk_free_rate": risk_free_rate,
         "dividend_yield": dividend_yield,
         "iv_convergence": round(iv_stats["convergence"], 4),
-        "panels_rendered": ["P2", "P3"],
+        "panels_rendered": sorted(figures),
     }
     html = render_page(figures, status)
 

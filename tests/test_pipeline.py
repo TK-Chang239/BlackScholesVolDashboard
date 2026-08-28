@@ -276,8 +276,51 @@ class TestRenderStage:
         status = run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(),
                      tmp_path, today=TODAY + dt.timedelta(days=1))
         page = (tmp_path / "docs" / "index.html").read_text()
-        assert "yesterday" in page
+        assert "prev session" in page
         assert status["snapshot_date"] == (TODAY + dt.timedelta(days=1)).isoformat()
+
+    def test_close_based_prior_chain_labels_overlay(self, tmp_path):
+        # Same shape as the prior-chain-overlay test above, but the prior
+        # session's chain came from the massive fallback (not yfinance), so
+        # the overlay label must flag it as close-based rather than implying
+        # a live quote timestamp.
+        from src.models.black_scholes import bs_price
+
+        def bracketing_chain(spot, expiry, dte, source):
+            T = dte / 365.0
+            rows = []
+            for strike in (spot - 20.0, spot + 20.0):
+                for kind in ("call", "put"):
+                    price = float(bs_price(spot, strike, T, 0.0415, 0.20, 0.0098, kind))
+                    rows.append({
+                        "expiry": expiry, "strike": strike, "kind": kind,
+                        "bid": price - 0.05, "ask": price + 0.05, "mid": price,
+                        "close": price, "volume": 100, "open_interest": 500,
+                        "vendor_iv": 0.20, "source": source,
+                    })
+            return pd.DataFrame(rows)
+
+        class FailingLive:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                raise RuntimeError("yahoo broke")
+
+        class BracketingFallback:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return bracketing_chain(spot, dt.date(2026, 9, 18), 21, "massive-fallback")
+
+        run(FakeEODHD(), FailingLive(), BracketingFallback(), real_cfg(), tmp_path, today=TODAY)
+
+        class NextDayEODHD(FakeEODHD):
+            def get_underlying_history(self, symbol, start=None):
+                df = underlying_frame()
+                extra = pd.DataFrame({"date": [TODAY + dt.timedelta(days=1)],
+                                      "close": [772.0], "adjusted_close": [772.0],
+                                      "volume": [1]})
+                return pd.concat([df, extra], ignore_index=True)
+        run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(),
+            tmp_path, today=TODAY + dt.timedelta(days=1))
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "close-based" in page
 
     def test_render_failure_leaves_page_and_status_untouched(self, tmp_path, monkeypatch):
         run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)

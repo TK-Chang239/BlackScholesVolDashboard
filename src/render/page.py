@@ -4,11 +4,20 @@ Self-contained: the vendored plotly.js bundle is inlined; no external
 requests at view time. Captions are part of the deliverable -- they carry
 the interview-prep story (SPEC 2.5) -- keep them verbatim.
 """
+import math
 from pathlib import Path
 
 import plotly.io as pio
 
 _BUNDLE = Path(__file__).parent / "assets" / "plotly-cartesian-2.35.2.min.js"
+
+
+def _fmt_pct(val) -> str:
+    """Format a fraction as a percent, or 'n/a' when missing/NaN."""
+    if val is None or (isinstance(val, (int, float)) and math.isnan(val)):
+        return "n/a"
+    return f"{val:.1%}"
+
 
 CAPTIONS = {
     "P2": (
@@ -22,7 +31,8 @@ CAPTIONS = {
         "Each point is the at-the-money implied vol for one expiry — the "
         "market's volatility price over that horizon. An upward slope reads as "
         "calm now, more risk priced later; kinks flag scheduled events such as "
-        "Fed meetings. Yesterday's curve in grey shows the day-over-day shift."
+        "Fed meetings. When a previous session is stored, its curve appears "
+        "in grey — labeled with its date — showing the day-over-day shift."
     ),
 }
 
@@ -68,7 +78,7 @@ def render_page(figures: dict, status: dict) -> str:
         f"spot <b>{status['spot']:.2f}</b> · session "
         f"<b>{status['snapshot_date']}</b> · chain source "
         f"<b>{status['source']}</b> · IV solver convergence "
-        f"<b>{status.get('iv_convergence', float('nan')):.1%}</b></p>",
+        f"<b>{_fmt_pct(status.get('iv_convergence'))}</b></p>",
     ]
     for qid, question, panel_ids, coming in QUESTIONS:
         parts.append(f"<h2>{qid}. {question}</h2>")

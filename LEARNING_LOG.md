@@ -223,4 +223,6 @@ Data committed from this session: `data/chains/2026-08-28.parquet` (40 rows, yfi
 
 Data committed from this run: `data/chains/2026-08-27.parquet` (1,459 rows, yfinance, overwritten), `data/chains/2026-08-24.parquet`, `data/chains/2026-08-25.parquet`, `data/chains/2026-08-26.parquet` (background-backfill additions picked up at commit time), `docs/index.html` (1.40 MB), `docs/status.json`.
 
+**Final-review fix: `2026-08-27.parquet` regenerated close-based.** The 1,459-row file above was solved from quotes captured at `last_success_utc` 10:38 ET on **2026-08-28** — a live intraday snapshot — but stored under the **2026-08-27** filename against that prior session's close, a session/quote mismatch that was fine for a demo page but wrong as the permanent stored record Phase 4's `daily_metrics` will read. It was removed and re-backfilled from Massive's close-based history (996 rows, `source: massive-backfill`); the live page itself is untouched and still reflects the documented intraday run until the next post-close cron overwrites it.
+
 

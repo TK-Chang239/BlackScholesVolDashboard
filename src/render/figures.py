@@ -13,6 +13,16 @@ _LAYOUT = dict(
 
 def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
     fig = go.Figure()
+    if smile.empty:
+        fig.add_annotation(
+            text="No converged OTM quotes for this session",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16))
+        fig.update_layout(
+            title="Implied volatility smile — solved from market quotes",
+            xaxis_title="Moneyness K/S", yaxis_title="Implied vol",
+            yaxis_tickformat=".0%", **_LAYOUT)
+        return fig
     for (expiry, dte), g in smile.groupby(["expiry", "dte"], sort=True):
         g = g.sort_values("strike")
         fig.add_trace(go.Scatter(
@@ -34,14 +44,15 @@ def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
 
 
 def build_term_structure_figure(today: pd.DataFrame,
-                                previous: pd.DataFrame | None) -> go.Figure:
+                                previous: pd.DataFrame | None,
+                                previous_label: str = "previous session") -> go.Figure:
     fig = go.Figure()
     if previous is not None and len(previous):
         fig.add_trace(go.Scatter(
             x=previous["dte"], y=previous["atm_iv"], mode="lines+markers",
-            name="yesterday", line=dict(color="lightgrey"),
+            name=previous_label, line=dict(color="lightgrey"),
             marker=dict(color="lightgrey"),
-            hovertemplate="%{x}d: %{y:.1%}<extra>yesterday</extra>"))
+            hovertemplate=f"%{{x}}d: %{{y:.1%}}<extra>{previous_label}</extra>"))
     fig.add_trace(go.Scatter(
         x=today["dte"], y=today["atm_iv"], mode="lines+markers",
         name="today",

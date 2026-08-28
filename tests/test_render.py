@@ -55,7 +55,7 @@ class TestFigures:
 
     def test_term_overlay_is_muted(self):
         fig = build_term_structure_figure(term_frame(), term_frame(shift=0.01))
-        prev = [t for t in fig.data if "yesterday" in (t.name or "").lower()]
+        prev = [t for t in fig.data if "previous session" in (t.name or "").lower()]
         assert len(prev) == 1
 
 
