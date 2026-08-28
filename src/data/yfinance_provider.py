@@ -22,7 +22,7 @@ def _default_ticker_factory(symbol: str):
 
 class YFinanceProvider:
     def __init__(self, cfg: dict, ticker_factory=None):
-        self._cfg = cfg
+        self._cfg = cfg  # kept for interface symmetry with other providers; get_option_chain uses its cfg param
         self._factory = ticker_factory or _default_ticker_factory
 
     def get_option_chain(self, symbol: str, snapshot_date: dt.date,
@@ -51,5 +51,10 @@ class YFinanceProvider:
                 df["mid"] = np.where(quoted, (df["bid"] + df["ask"]) / 2.0, np.nan)
                 df["source"] = "yfinance"
                 frames.append(df)
+        if not frames:
+            raise RuntimeError(
+                f"yfinance returned no option rows for {symbol} across "
+                f"{len(selected)} selected expiries — treating as vendor failure"
+            )
         out = pd.concat(frames, ignore_index=True)
         return out[PRE_FILTER_COLUMNS]

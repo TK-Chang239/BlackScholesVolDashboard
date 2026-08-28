@@ -76,3 +76,27 @@ class TestYFinance:
         p = YFinanceProvider(CFG, ticker_factory=lambda sym: Boom())
         with pytest.raises(Exception):
             p.get_option_chain("SPY", TODAY, spot=770.0, cfg=CFG)
+
+    def test_put_row_normalization(self):
+        p = YFinanceProvider(CFG, ticker_factory=lambda sym: StubTicker())
+        df = p.get_option_chain("SPY", TODAY, spot=770.0, cfg=CFG)
+        put = df[(df["kind"] == "put") & (df["expiry"] == dt.date(2026, 9, 18))].iloc[0]
+        assert put["kind"] == "put"
+        assert put["bid"] == 1.9
+        assert put["ask"] == 2.1
+        assert put["mid"] == pytest.approx(2.0)
+        assert put["close"] == 2.0  # lastPrice
+        assert put["open_interest"] == 50
+        assert put["vendor_iv"] == pytest.approx(0.24)
+        assert put["source"] == "yfinance"
+
+    def test_empty_chain_raises(self):
+        class EmptyStub(StubTicker):
+            def option_chain(self, expiry):
+                class OC:
+                    calls = yf_frame([])
+                    puts = yf_frame([])
+                return OC()
+        p = YFinanceProvider(CFG, ticker_factory=lambda sym: EmptyStub())
+        with pytest.raises(RuntimeError, match="no option rows"):
+            p.get_option_chain("SPY", TODAY, spot=770.0, cfg=CFG)
