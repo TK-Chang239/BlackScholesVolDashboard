@@ -153,8 +153,10 @@ NumPy arrays with broadcasting — one call prices the entire chain.
      puts); violation → NaN immediately, no iteration.
   2. Initial guess: Brenner–Subrahmanyam `σ₀ ≈ √(2π/T)·(price/S)`,
      clamped into [1e-4, 5.0].
-  3. Newton–Raphson using our own vega, tolerance 1e-8 in price,
-     max ~20 iterations, run vectorized across the whole chain at once.
+  3. Newton–Raphson using our own vega, tolerance 1e-10 in price
+     (σ-space accuracy ≈ tol/vega, so a loose price tolerance silently
+     degrades off-ATM IVs), max ~20 iterations, run vectorized across
+     the whole chain at once.
   4. Fallback to `scipy.optimize.brentq` on [1e-4, 5.0] (scalar loop over
      the stragglers) when Newton fails to converge, steps out of bounds,
      or vega < ~1e-10 — deep OTM options with tiny vega WILL break naive
