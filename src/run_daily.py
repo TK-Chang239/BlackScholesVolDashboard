@@ -33,6 +33,12 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     chain = filter_chain(raw, spot, today, cfg)
     if chain.empty:
         raise RuntimeError(f"filtered chain is empty (source={source}) — refusing to store")
+
+    # Get all status values from providers BEFORE any writes (failure policy: no partial writes).
+    risk_free_rate = eodhd.get_risk_free_rate()
+    dividend_yield = eodhd.get_dividend_yield(spot, today=today, symbol=symbol)
+
+    # Now safe to write chain and status.
     storage.write_chain(chain, today, root)
 
     status = {
@@ -41,8 +47,8 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "source": source,
         "rows_stored": int(len(chain)),
         "spot": spot,
-        "risk_free_rate": eodhd.get_risk_free_rate(),
-        "dividend_yield": eodhd.get_dividend_yield(spot, today=today, symbol=symbol),
+        "risk_free_rate": risk_free_rate,
+        "dividend_yield": dividend_yield,
     }
     storage.write_status(status, root)
     return status

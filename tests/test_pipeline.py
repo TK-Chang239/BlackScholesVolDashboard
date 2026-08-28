@@ -137,6 +137,9 @@ class TestDailyRun:
             run(FakeEODHD(), live, DeadFallback(), real_cfg(), tmp_path, today=TODAY)
         assert not storage.chain_exists(TODAY, tmp_path)
         assert not (tmp_path / "docs" / "status.json").exists()
+        # deliberate (controller ruling): underlying history is independently valid market data;
+        # SPEC 2.1's no-partial-write guarantee covers only the chain file and status.json
+        assert (tmp_path / "data" / "underlying.parquet").exists()
 
     def test_empty_filtered_chain_is_a_failure(self, tmp_path):
         class EmptyLive:
@@ -148,3 +151,18 @@ class TestDailyRun:
         with pytest.raises(RuntimeError):
             run(FakeEODHD(), EmptyLive(), DeadFallback(), real_cfg(), tmp_path, today=TODAY)
         assert not storage.chain_exists(TODAY, tmp_path)
+
+    def test_late_provider_failure_writes_no_chain_or_status(self, tmp_path):
+        """Regression: late provider calls (get_risk_free_rate, etc) must happen
+        before write_chain to ensure no partial writes when they fail."""
+        class BrokenEODHD:
+            def get_underlying_history(self, symbol, start=None):
+                return underlying_frame()
+            def get_risk_free_rate(self):
+                raise RuntimeError("rate service down")
+            def get_dividend_yield(self, spot, today=None, symbol="SPY"):
+                return 0.0098
+        with pytest.raises(RuntimeError):
+            run(BrokenEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert not storage.chain_exists(TODAY, tmp_path)
+        assert not (tmp_path / "docs" / "status.json").exists()
