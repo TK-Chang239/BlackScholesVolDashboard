@@ -28,8 +28,71 @@ private list.
 
 ## Phase 0 findings — EODHD data access
 
-*(Filled in by the Phase 0 verification run: endpoints that work, fields
-available, history depth, rate limits, EOD settlement time vs the cron hour.)*
+### 2026-08-28 — Verification run (`scripts/verify_eodhd.py`)
+
+**Account/token.** `GET /api/user` → HTTP 200. The token is valid and the
+account is on a paid monthly subscription (`subscriptionType: "monthly"`,
+`subscriptionMode: "paid"`). Rate-limit fields present: `dailyRateLimit:
+100000`, `extraLimit: 500`, `apiRequests: 252` used so far that day. No
+per-minute limit is exposed in this payload, and the response contains no
+field indicating which EODHD add-ons/marketplace products the account is
+entitled to — that had to be discovered empirically via the options probes
+below.
+
+**Underlying EOD (`eod/SPY.US`).** HTTP 200, 22 rows for a 30-day window.
+Fields: `date, open, high, low, close, adjusted_close, volume` — everything
+needed for spot and realized vol.
+
+**Dividends (`div/SPY.US`).** HTTP 200, 4 rows over the trailing ~13 months.
+Fields: `date, declarationDate, recordDate, paymentDate, period, value,
+unadjustedValue, currency`. Quarterly SPY distributions in the $1.80–$2.00
+range, consistent with the SPEC §2.2 estimate of q ≈ 1.2–1.4% once summed
+trailing-12m and divided by spot.
+
+**Options data — both probes failed; no options endpoint returns 200 on
+this account.**
+
+- `mp/unicornbay/options/eod` (filter `underlying_symbol=SPY`) → **HTTP
+  403 Forbidden**. Body is an HTML error page (title "Forbidden"), not
+  JSON — this is a hard access-denial, not a malformed-request error.
+  Consistent with the account not being subscribed to the UnicornBay
+  options marketplace add-on.
+- `options/SPY.US` (legacy endpoint) → **HTTP 404**, body `"Ticker Not
+  Found."` — distinct failure mode from the 403 above; either the legacy
+  options endpoint has been fully retired for new/this-tier accounts, or
+  it never recognized the `SPY.US` ticker format. Either way it is not a
+  usable path.
+- History-depth probe (`mp/unicornbay/options/eod`, `date_from`/`date_to`
+  ~180 days back) → **HTTP 403 Forbidden**, same error page as the current
+  probe. This confirms the failure is account/entitlement-based, not
+  date-range-based — going further back does not unlock the endpoint.
+
+Because no options endpoint ever returned data, the remaining items the
+script's closing message asks for are **not observable from this
+account/plan**: no field inventory (bid/ask/last/volume/open_interest/
+expiry/strike/type), no vendor IV/Greeks presence, no options history
+depth, and no read on when today's options rows would settle relative to
+the `30 1 * * 2-6` UTC cron — there is no options "today" to check against.
+
+**Risk-free rate.** `eod/US3M.INDX` → HTTP 200 on the first candidate
+(`US3M.GBOND` was not needed), 11 rows over 14 days, `close` around 3.8%.
+This is a viable risk-free-rate source independent of the options-access
+question.
+
+**Bottom line / open decision for the controller (SPEC §8).** EOD
+underlying, dividends, and a risk-free-rate proxy are all confirmed
+working on this plan. SPY options data is not reachable through either
+endpoint this script tried, under the current subscription. Per SPEC §8
+this is exactly the scenario the `DataProvider` abstraction was built to
+absorb (`YFinanceProvider` fallback "one class away"), but before Phase 2
+picks a path someone needs to decide between: (a) upgrading the EODHD
+subscription to include the UnicornBay options marketplace add-on and
+re-running this script to confirm 200s and inspect real fields/history
+depth, or (b) building `EODHDProvider` for underlying/dividends/rate only
+and pairing it with a `YFinanceProvider` (or similar) for the options leg.
+This script and this record are reusable either way — rerun it after any
+plan change to fill in the field inventory and history-depth sections
+above.
 
 ## Entries
 
