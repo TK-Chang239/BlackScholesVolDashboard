@@ -1,0 +1,9 @@
+{
+  "last_success_utc": "2026-08-28T06:58:13+00:00",
+  "snapshot_date": "2026-08-28",
+  "source": "yfinance",
+  "rows_stored": 40,
+  "spot": 771.1,
+  "risk_free_rate": 0.0378,
+  "dividend_yield": 0.009758786149656336
+}
