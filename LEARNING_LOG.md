@@ -121,6 +121,22 @@ Starter tier plausibly unlocks the snapshot (with bid/ask, IV, OI) and
 ~2 years of history — must be re-verified with this same script after
 any upgrade before Phase 2 builds on it.
 
+**Post-upgrade re-verification (same day, Options Starter):** chain
+snapshot flipped 403→200 (250 rows/page, `day` OHLC + `open_interest`;
+vendor `greeks` and `implied_volatility` populated on liquid ATM strikes —
+stored for cross-checks only, per §2.2). **`last_quote` (bid/ask) is
+still absent even on a 17,974-OI ATM contract — quotes are a
+higher-tier entitlement, not part of Starter.** Backfill path verified
+end-to-end: expired-contract reference (`expired=true`) works and
+historical daily aggregates on a September-2025 contract returned real
+rows a year back. Decision: **hybrid** — yfinance serves the daily live
+chain (real bid/ask → P7's beyond-the-spread test and Q8 keep full
+fidelity), Massive Starter serves the one-time backfill (close-based
+IVs, labeled as such) and acts as fallback if yfinance breaks; EODHD
+keeps underlying/dividends/rates. Three probes, three vendors, one
+lesson: entitlements are discovered by calling the API, never by
+reading the pricing page.
+
 ### 2026-08-28 — Addendum: yfinance spike (throwaway)
 
 A five-line yfinance spike confirmed the free path works: 29 SPY

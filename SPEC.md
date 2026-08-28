@@ -70,9 +70,9 @@ Four stages, strictly separated so each is testable alone:
   Mon–Fri US sessions). Also `workflow_dispatch` for manual runs.
 - **Publishing**: the workflow commits updated `data/` and `docs/` back to
   `main`; GitHub Pages serves the `docs/` folder. No servers, no cost.
-- **Secrets**: `EODHD_API_TOKEN` and `ALPHAVANTAGE_API_KEY` stored as
+- **Secrets**: `EODHD_API_TOKEN` and `MASSIVE_API_KEY` stored as
   GitHub Actions secrets (locally in gitignored `.env`). Never in code,
-  never in committed data.
+  never in committed data. yfinance needs no key.
 - **Failure policy**: if the fetch fails (API down, holiday, rate limit),
   the job exits gracefully *without* committing, leaving yesterday's
   dashboard live. A `status.json` (last successful run, row counts) is
@@ -80,18 +80,28 @@ Four stages, strictly separated so each is testable alone:
 
 ### 2.2 Data layer (`src/data/`)
 
-**Two vendors** (revised 2026-08-28: Phase 0 verification found the EODHD
-account has no options entitlement — marketplace endpoint 403s at the
-account level; legacy endpoint is dead. Underlying/dividends/rates all
-work on EODHD, so options move to Alpha Vantage and EODHD keeps the rest):
+**Three vendors, hybrid design** (final revision 2026-08-28, each role
+verified empirically — see LEARNING_LOG Phase 0 findings for the full
+elimination trail: EODHD options 403 at account level; Alpha Vantage
+options premium-gated; Massive free tier lacks the chain snapshot and
+bid/ask; Massive Options Starter verified for snapshot + history but
+quotes remain higher-tier):
 
-- US options EOD: **Alpha Vantage `HISTORICAL_OPTIONS`** — full SPY chain
-  for a given date per call, free tier (~25 requests/day — ample for the
-  1-call/day pipeline; paces backfill, see below). Fields include bid,
-  ask, mark, last, volume, open interest, plus vendor-computed IV and
-  Greeks — stored for cross-checking but **never** used in our
-  computations. Verified by `scripts/verify_alphavantage.py` (Phase 0
-  addendum) before Phase 2 builds on it.
+- **Daily live chain: yfinance** — full SPY chain with real bid/ask,
+  volume, open interest (verified: 29 expirations, penny-wide ATM
+  markets). Bid/ask is load-bearing: P7's tradeable-violation test and
+  question Q-private-8 require it. Unofficial API — the fetch stage must
+  fail loudly and skip the day when it breaks (§2.1 failure policy).
+- **Backfill + fallback: Massive Options Starter** (paid, key
+  `MASSIVE_API_KEY`) — expired-contract reference plus historical daily
+  aggregates (verified to ≥1 year back; docs claim ~2 years) feed the
+  one-time backfill with **close-based** IVs, labeled as such in the
+  panels (no historical bid/ask exists on this tier). Its chain snapshot
+  (close, OHLC, OI, vendor IV/Greeks on liquid strikes; no bid/ask) is
+  the automatic fallback when the yfinance fetch fails: those days store
+  chains without bid/ask and are flagged in `status.json`. Vendor
+  IV/Greeks are stored for cross-checking but **never** used in our
+  computations.
 - Underlying EOD history: SPY adjusted close (for spot + realized vol).
 - Risk-free rate: 3-month US T-bill (EODHD bill-rate endpoint or a static
   monthly-updated value in `config.yaml` as fallback — precision here
@@ -105,18 +115,23 @@ work on EODHD, so options move to Alpha Vantage and EODHD keeps the rest):
 
 **Abstraction**: a single `DataProvider` interface
 (`get_option_chain(symbol, date)`, `get_underlying_history(symbol)`,
-`get_risk_free_rate()`), composed from `AlphaVantageProvider` (chains) and
-`EODHDProvider` (underlying, dividends, rates). Nothing outside
-`src/data/` may know which vendor serves which call — the split is an
-implementation detail behind the interface.
+`get_risk_free_rate()`), composed from `YFinanceProvider` (live chain),
+`MassiveProvider` (backfill + chain fallback), and `EODHDProvider`
+(underlying, dividends, rates). Nothing outside `src/data/` may know
+which vendor serves which call — the routing is an implementation detail
+behind the interface, and every stored chain row records which source
+produced it.
 
 **Chain filtering** (keeps the repo small and the analysis honest):
 
 - Expiries: nearest ~6 monthly expiries within 7–365 DTE.
 - Strikes: 0.70–1.30 moneyness (K/S).
-- Liquidity floor: drop quotes with bid = 0 or missing ask.
-- Store bid, ask, and mid — the IV solver runs on all three at least once
-  (guiding question Q-private-8), mid by default.
+- Liquidity floor: drop quotes with bid = 0 or missing ask (live yfinance
+  rows); for close-only rows (Massive backfill/fallback), drop contracts
+  with zero volume AND zero open interest instead.
+- Store bid, ask, mid, and close, plus a `source` column — the IV solver
+  runs on bid/mid/ask at least once (guiding question Q-private-8), mid
+  by default on live rows, close on backfill/fallback rows.
 
 **Storage format**: one Parquet file per day in `data/chains/YYYY-MM-DD.parquet`
 (~tens of KB filtered), plus rolling `data/underlying.parquet` and derived
@@ -127,13 +142,16 @@ instead replays raw chain files, so chains it needs are the one exception
 to the "old chains are prunable" rule.
 
 **Cold-start / backfill**: time-series panels (IV vs RV, skew history,
-hedge P&L) need history. Alpha Vantage's historical options reach back
-years, but the free tier's ~25 calls/day means a 6-month backfill
-(~126 trading days, 1 call each) runs over ~6 calendar days — the Phase 2
-backfill script must therefore be resumable (track last fetched date,
-stop before the daily cap, continue on next run). If depth or limits
-disappoint, panels state "accumulating since <date>" and grow live —
-which is itself honest and fine.
+hedge P&L) need history. The one-time Phase 2 backfill reconstructs
+per-date filtered chains from Massive: expired+active contract reference,
+then historical daily aggregates per contract (unlimited call rate on
+Starter; verified ≥1 year deep, target as far as the tier returns data).
+Backfilled rows carry close-based prices only (no historical bid/ask
+exists on this tier) and are marked `source="massive-backfill"` so
+panels can label the regime honestly. The script should still be
+resumable (track last completed date) as basic robustness for a
+multi-thousand-call job. Whatever depth it achieves, panels state
+"accumulating since <date>" semantics remain the fallback.
 
 ### 2.3 Model layer (`src/models/`) — hand-built, the heart of the project
 
@@ -415,7 +433,7 @@ them; heavy frameworks (no Streamlit/Dash — static HTML is the point).
 
 | Risk | Mitigation |
 |------|------------|
-| ~~EODHD plan lacks options data~~ **materialized 2026-08-28**: EODHD 403s on options | Options moved to Alpha Vantage `HISTORICAL_OPTIONS` (free tier); `DataProvider` abstraction absorbed the split exactly as designed. Residual risk: AV free-tier limits tighten → same abstraction, next vendor |
+| ~~EODHD plan lacks options data~~ **materialized 2026-08-28** (and Alpha Vantage premium-gated; Massive Starter lacks quotes) | Hybrid absorbed by `DataProvider` exactly as designed: yfinance live (bid/ask), Massive backfill+fallback, EODHD the rest. Residual risk: yfinance breakage → automatic Massive fallback (flagged, no bid/ask those days) |
 | Time-series panels look empty for weeks | Backfill (Phase 2); "accumulating since" labels; hedge sim is a stateless replay over stored chain history (§3 P8), so its scatter starts as populated as the chain archive allows — no early start needed |
 | IV solver instability on junk quotes | Liquidity filters + no-arb bound checks + Brent safeguard; failures logged, counted in status.json, and written up |
 | Silent staleness (Action dies quietly) | Visible last-updated stamp + status.json; failed runs don't commit |
