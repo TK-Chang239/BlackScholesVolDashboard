@@ -111,7 +111,7 @@ in [`SPEC.md`](SPEC.md).
 ## Status
 
 - [ ] Phase 0 — repo scaffold, data-access verification
-- [ ] Phase 1 — Black-Scholes pricer + Greeks, fully unit-tested
+- [x] Phase 1 — Black-Scholes pricer + Greeks, fully unit-tested
 - [ ] Phase 2 — data pipeline + history backfill
 - [ ] Phase 3 — IV solver; smile + term-structure panels live on Pages
 - [ ] Phase 4 — implied-vs-realized, sensitivity, Greeks panels
