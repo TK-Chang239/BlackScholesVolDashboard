@@ -219,7 +219,44 @@ def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Fig
                       margin=dict(b=110))
     fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", secondary_y=False)
     fig.update_yaxes(title_text="Spread", tickformat="+.1%", secondary_y=True, showgrid=False)
-    first, last = series["date"].iloc[0], series["date"].iloc[-1]
-    if (last - first).days > 365:
-        fig.update_xaxes(range=[last - timedelta(days=180), last + timedelta(days=3)])
+    _apply_recent_range(fig, series["date"])
+    return fig
+
+
+def _apply_recent_range(fig: go.Figure, dates: pd.Series,
+                        recent_days: int = 180, span_days: int = 365) -> None:
+    """Default the x-axis to the recent window when the history is long
+    (a lone depth-probe session years back would otherwise crush the daily
+    series into a sliver). Double-click restores autorange."""
+    if len(dates) == 0:
+        return
+    first, last = dates.iloc[0], dates.iloc[-1]
+    if (last - first).days > span_days:
+        fig.update_xaxes(range=[last - timedelta(days=recent_days), last + timedelta(days=3)])
+
+
+def build_skew_figure(metrics: pd.DataFrame, annotations: pd.DataFrame) -> go.Figure:
+    title = "25-delta skew — put IV minus call IV at the ~30-DTE expiry"
+    series = metrics[["date", "skew_25d", "skew_25d_dte"]].dropna(subset=["skew_25d"])
+    series = series.sort_values("date").reset_index(drop=True)
+    if series.empty:
+        return _empty_figure(title, "No session with a bracketed 25-delta skew yet",
+                             yaxis_title="Vol points")
+    plotted = _break_gaps(series)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=plotted["date"], y=plotted["skew_25d"] * 100.0, mode="lines+markers",
+        name="25-delta skew (put − call)", line=dict(color="#8172b2"), marker=dict(size=5),
+        customdata=plotted["skew_25d_dte"],
+        hovertemplate="%{x}: %{y:+.1f} vol pts (%{customdata:.0f}d expiry)<extra></extra>"))
+    fig.add_hline(y=0, line=dict(color="grey", width=1, dash="dot"))
+    by_date = dict(zip(series["date"], series["skew_25d"] * 100.0))
+    for _, a in annotations.iterrows():
+        if a["date"] in by_date:
+            fig.add_annotation(x=a["date"], y=by_date[a["date"]], text=str(a["note"]),
+                               showarrow=True, arrowhead=2, ax=0, ay=-40,
+                               font=dict(size=11))
+    fig.update_layout(title=title, **_LAYOUT)
+    fig.update_yaxes(title_text="Vol points (put − call)", ticksuffix="")
+    _apply_recent_range(fig, series["date"])
     return fig

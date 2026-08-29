@@ -286,3 +286,38 @@ class TestPagePhase4:
         html = render_page(self._figs(), self._status())
         for pid in ("P1", "P2", "P3", "P4", "P5"):
             assert CAPTIONS[pid] in html
+
+
+class TestSkewFigure:
+    def _metrics(self, dates, skews):
+        return pd.DataFrame({"date": dates, "skew_25d": skews,
+                             "skew_25d_dte": [30.0] * len(dates)})
+
+    def test_vol_points_and_annotation_match(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        d = [dt.date(2026, 8, 24) + dt.timedelta(days=i) for i in range(4)]
+        m = self._metrics(d, [0.030, 0.032, 0.045, 0.031])
+        ann = pd.DataFrame({"date": [d[2], dt.date(2026, 1, 1)], "note": ["risk-off", "absent"]})
+        fig = build_skew_figure(m, ann)
+        trace = [t for t in fig.data if "skew" in (t.name or "").lower()][0]
+        assert max(v for v in trace.y if v == v) == pytest.approx(4.5)
+        texts = [a.text for a in fig.layout.annotations]
+        assert "risk-off" in texts and "absent" not in texts
+
+    def test_gap_breaks_and_recent_range(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        d = [dt.date(2024, 9, 3)] + [dt.date(2026, 8, 24) + dt.timedelta(days=i) for i in range(3)]
+        fig = build_skew_figure(self._metrics(d, [0.02, 0.03, 0.03, 0.03]),
+                                pd.DataFrame(columns=["date", "note"]))
+        trace = [t for t in fig.data if "skew" in (t.name or "").lower()][0]
+        assert any(v is None or v != v for v in trace.y)
+        assert fig.layout.xaxis.range is not None
+
+    def test_all_nan_is_empty_figure(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        m = self._metrics([dt.date(2026, 8, 24)], [float("nan")])
+        fig = build_skew_figure(m, pd.DataFrame(columns=["date", "note"]))
+        assert not fig.data and fig.layout.annotations
