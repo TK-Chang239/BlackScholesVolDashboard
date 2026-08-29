@@ -37,6 +37,14 @@ def make_chain(source="yfinance", spread_frac=0.01,
     return out
 
 
+# A dense near-the-money ladder: eight strikes inside |K/S - 1| <= 0.02 (spot 770
+# -> 754.6..785.4), so the forward is estimated by the median of the per-strike
+# implied forwards rather than by interpolating between two ATM quotes. 770 is
+# deliberately absent, so the two-point fallback would use 768 and 772.
+DENSE_STRIKES = (700.0, 740.0, 756.0, 760.0, 764.0, 768.0,
+                 772.0, 776.0, 780.0, 784.0, 800.0, 840.0)
+
+
 class TestParity:
     def test_synthetic_prices_satisfy_parity_to_machine_eps(self):
         p = compute_parity(make_chain(), R, Q)
@@ -106,7 +114,8 @@ class TestForwardCalibration:
     def test_synthetic_chain_forward_recovers_spot_forward(self):
         p = compute_parity(make_chain(), R, Q)
         f = implied_forward(p, SPOT, R)
-        assert list(f.columns) == ["expiry", "dte", "forward", "implied_carry"]
+        assert list(f.columns) == ["expiry", "dte", "forward", "implied_carry",
+                                   "n_forward_strikes"]
         for _, row in f.iterrows():
             T = row["dte"] / 365.0
             assert row["forward"] == pytest.approx(SPOT * np.exp((R - Q) * T), rel=1e-9)
@@ -159,6 +168,61 @@ class TestForwardCalibration:
         assert np.isnan(carry_reference(implied_forward(p, SPOT, R))[0])
 
 
+class TestRobustForward:
+    """The forward must not be hostage to two ATM quotes (F4)."""
+
+    def test_median_over_the_near_atm_ladder_when_three_or_more_strikes_exist(self):
+        f = implied_forward(compute_parity(make_chain(strikes=DENSE_STRIKES), R, Q), SPOT, R)
+        assert list(f["n_forward_strikes"]) == [8, 8]
+        assert f["n_forward_strikes"].dtype.kind == "i"
+        for _, row in f.iterrows():
+            T = row["dte"] / 365.0
+            assert row["forward"] == pytest.approx(SPOT * np.exp((R - Q) * T), rel=1e-9)
+
+    def test_sparse_ladder_falls_back_to_the_two_point_interpolation(self):
+        # The default ladder has only 760 and 780 within 2% of spot.
+        f = implied_forward(compute_parity(make_chain(), R, Q), SPOT, R)
+        assert list(f["n_forward_strikes"]) == [2, 2]
+        for _, row in f.iterrows():
+            T = row["dte"] / 365.0
+            assert row["forward"] == pytest.approx(SPOT * np.exp((R - Q) * T), rel=1e-9)
+
+    def test_two_bumped_atm_calls_barely_move_the_median_forward(self):
+        # The reviewer's stress case: add $1 to just the two ATM call quotes of
+        # the front expiry. A two-point estimator swallows the whole dollar; the
+        # median over the near-ATM ladder must not.
+        clean = compute_parity(make_chain(strikes=DENSE_STRIKES), R, Q)
+        chain = make_chain(strikes=DENSE_STRIKES)
+        m = ((chain["kind"] == "call") & (chain["dte"] == 28)
+             & chain["strike"].isin([768.0, 772.0]))
+        assert int(m.sum()) == 2
+        for col in ("price_used", "mid", "close", "bid", "ask"):
+            chain.loc[m, col] = chain.loc[m, col] + 1.0
+        bumped = compute_parity(chain, R, Q)
+
+        f_clean = implied_forward(clean, SPOT, R).set_index("dte")
+        f_bumped = implied_forward(bumped, SPOT, R).set_index("dte")
+        assert abs(f_bumped.loc[28, "forward"] - f_clean.loc[28, "forward"]) < 0.01
+        assert f_bumped.loc[28, "n_forward_strikes"] == 8
+
+        # ...whereas interpolating C - P between the two bumped strikes, which is
+        # what the estimator used to do, moves the forward by a full dollar.
+        g = bumped[bumped["dte"] == 28].sort_values("strike")
+        two_point = SPOT + float(np.interp(SPOT, g["strike"], g["lhs"])) * np.exp(R * 28 / 365.0)
+        assert two_point - f_clean.loc[28, "forward"] > 0.9
+
+        # and the bad quotes stay visible as violations on their own strikes only
+        assert int(bumped["tradeable_violation_fwd"].sum()) == 2
+        assert set(bumped[bumped["tradeable_violation_fwd"]]["strike"]) == {768.0, 772.0}
+        assert not clean["tradeable_violation_fwd"].any()
+
+    def test_non_liquid_near_atm_strikes_do_not_feed_the_median(self):
+        chain = make_chain(strikes=DENSE_STRIKES)
+        chain.loc[chain["strike"].isin([756.0, 760.0, 764.0]), "open_interest"] = 0.0
+        f = implied_forward(compute_parity(chain, R, Q), SPOT, R)
+        assert list(f["n_forward_strikes"]) == [5, 5]
+
+
 class TestLiquidity:
     def test_zero_open_interest_leg_is_not_liquid(self):
         chain = make_chain()
@@ -207,6 +271,25 @@ class TestEarlyExercise:
         row = p[(p["strike"] == 840.0) & (p["dte"] == 84)].iloc[0]
         assert bool(row["tradeable_violation_fwd"]) is True
         assert bool(row["early_exercise_explained"]) is True
+
+    def test_out_of_the_money_put_gap_inside_the_bound_is_not_explained(self):
+        # K = 740 is BELOW spot 770, so the put is out of the money and exercising
+        # it early is never rational -- however comfortably the gap fits inside
+        # K*rT, early exercise cannot be what produced it (F2).
+        chain = make_chain()
+        T = 84 / 365.0
+        bound = 740.0 * (1 - np.exp(-R * T)) - SPOT * (1 - np.exp(-Q * T))
+        m = (chain["kind"] == "put") & (chain["strike"] == 740.0) & (chain["dte"] == 84)
+        chain.loc[m, "price_used"] = chain.loc[m, "price_used"] + bound * 0.75
+        p = compute_parity(chain, R, Q)
+        row = p[(p["strike"] == 740.0) & (p["dte"] == 84)].iloc[0]
+        assert row["strike"] < SPOT
+        assert bool(row["tradeable_violation_fwd"]) is True
+        assert row["deviation_fwd"] < 0
+        assert abs(row["deviation_fwd"]) <= row["early_exercise_bound"] + row["spread"]
+        assert bool(row["early_exercise_explained"]) is False
+        s = parity_summary(p)
+        assert s["n_violations_early_exercise"] == 0 and s["n_violations_unexplained"] == 1
 
     def test_gap_beyond_the_bound_is_not_explained(self):
         chain = make_chain()

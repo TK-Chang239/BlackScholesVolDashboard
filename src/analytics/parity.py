@@ -15,19 +15,26 @@ forward from the market's own ATM C - P (`forward`, `deviation_fwd`)
 and then asks whether C - P is the correct affine function of K across
 the rest of the ladder: for a fixed expiry parity says
 C - P = e^{-rT}(F - K), exactly linear in K with slope -e^{-rT}. That
-removes the nuisance parameter and keeps the arbitrage content. The
-spot-based deviation stays on the frame and in the summary -- the gap
+removes the nuisance parameter (mostly: the slope still carries our r)
+and keeps the arbitrage content. What it cannot see any more is a pure
+LEVEL error at the money -- that is exactly what the calibration absorbs.
+The spot-based deviation stays on the frame and in the summary -- the gap
 between the two is itself the measurement.
 
-`implied_forward` reports the calibrated forward and the carry it
-implies, ln(F/S)/T, which under our assumptions must equal r - q.
+The forward itself is estimated robustly: under parity every strike gives
+the same F = K + (C - P)e^{rT}, so the near-the-money strikes are many
+independent readings of one number and the MEDIAN of them is used. Two ATM
+quotes should never be able to move the ruler the whole ladder is measured
+against. `implied_forward` reports that forward, how many strikes fed it,
+and the carry it implies, ln(F/S)/T, which under our assumptions must
+equal r - q.
 
 What survives the calibration is mostly not arbitrage either: SPY options
 are American, and an early-exercisable in-the-money put is worth more than
 the European one parity is written for. `early_exercise_bound` prices the
 most that effect can be worth, and `early_exercise_explained` marks the
-violations that fit inside it, so the headline count is the residue that
-nothing in this file can account for.
+in-the-money-put violations that fit inside it, so the headline count is
+the residue that nothing in this file can account for.
 """
 import numpy as np
 import pandas as pd
@@ -38,7 +45,7 @@ PARITY_COLUMNS = ["expiry", "dte", "strike", "moneyness", "call_price", "put_pri
                   "early_exercise_explained", "spread",
                   "tradeable_violation", "tradeable_violation_fwd"]
 CARRY_COLUMNS = ["expiry", "dte", "implied_carry"]
-FORWARD_COLUMNS = ["expiry", "dte", "forward", "implied_carry"]
+FORWARD_COLUMNS = ["expiry", "dte", "forward", "implied_carry", "n_forward_strikes"]
 
 
 def compute_parity(chain_iv: pd.DataFrame, r: float, q: float) -> pd.DataFrame:
@@ -81,25 +88,34 @@ def compute_parity(chain_iv: pd.DataFrame, r: float, q: float) -> pd.DataFrame:
                                     & p["spread"].notna()
                                     & p["deviation_fwd"].notna()).astype(bool)
 
-    # SPY options are American. An American put is worth at least its intrinsic
-    # K - S, while its European twin is worth K*e^{-rT} - S*e^{-qT} + C, so the
-    # most that early exercise can add to P -- and therefore the most it can
-    # push C - P BELOW the parity forward -- is
-    #     K*(1 - e^{-rT}) - S*(1 - e^{-qT}),
-    # the interest earned on the strike less the dividends forgone by exercising
-    # early. It depends only on K, T, r, q, S: no quote enters it. It is a
-    # BOUND, not a price: it says what early exercise could be worth at most.
-    # For a short T and a fat q it can come out negative -- early exercise is
-    # then worth nothing at all -- so clip at zero.
+    # SPY options are American. The rigorous ceiling on the American-minus-
+    # European PUT premium is K*(1 - e^{-rT}): exercising early hands you the
+    # strike now instead of at T, so the most the right can ever be worth is the
+    # interest earned on K over the remaining life. (Equivalently, the Kim
+    # integral  int_0^T (r*K*e^{-rt} - q*S*e^{-qt}) dt  with the exercise-region
+    # probabilities set to 1.) Dropping the dividend leg of that integral -- the
+    # yield you forgo by giving up the stock -- gives
+    #     ee_bound = K*(1 - e^{-rT}) - S*(1 - e^{-qT}),
+    # which is STRICTLY TIGHTER than the rigorous ceiling. Using the tighter one
+    # makes the classification conservative: it explains away less than it is
+    # entitled to, and a gap outside it is therefore not proof of anything.
+    # It depends only on K, T, r, q, S: no quote and no volatility enter it. It
+    # is a BOUND, not a price. For a short T and a fat q it can come out negative
+    # -- early exercise is then worth nothing at all -- so clip at zero.
     p["early_exercise_bound"] = np.maximum(
         p["strike"].to_numpy(dtype=float) * (1.0 - np.exp(-r * T))
         - spot * (1.0 - np.exp(-q * T)), 0.0)
     # Reads as "this violation is explained", never "this row is explainable":
     # false wherever there is no tradeable violation to explain. Only a NEGATIVE
-    # gap can be an early-exercise story -- a rich call pushes the other way.
+    # gap can be an early-exercise story -- a rich call pushes the other way --
+    # and only an IN-THE-MONEY put (K > S) can be exercised early for value at
+    # all: the bound grows with K*rT even where the American premium is zero, so
+    # without this gate it "explains" out-of-the-money wing puts it has no
+    # business explaining.
     p["early_exercise_explained"] = (
         p["tradeable_violation_fwd"].astype(bool)
         & (p["deviation_fwd"] < 0)
+        & (p["strike"] > spot)
         & (p["deviation_fwd"].abs() <= p["early_exercise_bound"] + p["spread"])
     ).astype(bool)
     return (p[PARITY_COLUMNS].sort_values(["expiry", "strike"])
@@ -140,13 +156,25 @@ def _brackets(g: pd.DataFrame, spot: float) -> bool:
     return len(ks) >= 2 and bool(ks.min() <= spot <= ks.max())
 
 
-def _forward_table(parity: pd.DataFrame, spot: float, r: float) -> pd.DataFrame:
-    """Per expiry: interpolate C - P to K = spot and back out F = S + (C-P)e^{rT}.
+ATM_BAND = 0.02          # |K/S - 1| within which a strike counts as "at the money"
+MIN_FORWARD_STRIKES = 3  # below this the median is not worth having; interpolate
 
-    C - P is exactly linear in K under parity, so the interpolation is exact
-    rather than approximate. Liquid strikes are preferred; an expiry whose
-    liquid ladder does not straddle spot falls back to all of its strikes,
-    and one that still does not straddle spot is skipped (never extrapolated).
+
+def _forward_table(parity: pd.DataFrame, spot: float, r: float) -> pd.DataFrame:
+    """Per expiry: back out the forward the market's own C - P implies.
+
+    Under parity EVERY strike gives the same forward, F = K + (C - P)e^{rT},
+    so the near-the-money strikes are many independent readings of one number
+    and the spread across them is pure noise/staleness. The estimate is the
+    MEDIAN of those readings over the liquid strikes within `ATM_BAND` of spot,
+    which needs a bad quote on half the ladder to move -- where interpolating
+    between the two strikes bracketing spot needs only one. Fewer than
+    `MIN_FORWARD_STRIKES` such strikes falls back to that two-point
+    interpolation (exact, not approximate: C - P is linear in K).
+
+    Liquid strikes are preferred throughout; an expiry whose liquid ladder does
+    not straddle spot falls back to all of its strikes, and one that still does
+    not straddle spot is skipped -- the forward is never extrapolated.
     """
     rows = []
     for (expiry, dte), g in parity.groupby(["expiry", "dte"], sort=False):
@@ -159,14 +187,21 @@ def _forward_table(parity: pd.DataFrame, spot: float, r: float) -> pd.DataFrame:
             continue
         sub = sub.sort_values("strike")
         T = float(dte) / 365.0
-        lhs_atm = float(np.interp(spot, sub["strike"].to_numpy(dtype=float),
-                                  sub["lhs"].to_numpy(dtype=float)))
-        forward = float(spot + lhs_atm * np.exp(r * T))
+        strikes = sub["strike"].to_numpy(dtype=float)
+        lhs = sub["lhs"].to_numpy(dtype=float)
+        atm = np.abs(strikes / spot - 1.0) <= ATM_BAND if spot > 0 else np.zeros(len(sub), bool)
+        n_strikes = int(atm.sum())
+        if n_strikes >= MIN_FORWARD_STRIKES:
+            forward = float(np.median(strikes[atm] + lhs[atm] * np.exp(r * T)))
+        else:
+            n_strikes = 2       # the two strikes that bracket spot, and only those
+            forward = float(spot + float(np.interp(spot, strikes, lhs)) * np.exp(r * T))
         carry = float(np.log(forward / spot) / T) if forward > 0 and spot > 0 else np.nan
-        rows.append({"expiry": expiry, "dte": int(dte),
-                     "forward": forward, "implied_carry": carry})
-    return (pd.DataFrame(rows, columns=FORWARD_COLUMNS).sort_values("dte")
-            .reset_index(drop=True))
+        rows.append({"expiry": expiry, "dte": int(dte), "forward": forward,
+                     "implied_carry": carry, "n_forward_strikes": n_strikes})
+    out = (pd.DataFrame(rows, columns=FORWARD_COLUMNS).sort_values("dte")
+           .reset_index(drop=True))
+    return out.astype({"n_forward_strikes": int}) if len(out) else out
 
 
 def implied_forward(parity: pd.DataFrame, spot: float, r: float) -> pd.DataFrame:

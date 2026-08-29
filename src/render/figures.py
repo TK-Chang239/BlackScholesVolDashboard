@@ -16,6 +16,10 @@ _LAYOUT = dict(
     title_yanchor="top",
 )
 
+# P7 carries a note above the plot area (close-based, or the early-exercise
+# count), so it needs more headroom between the title and the top row of cells.
+_PARITY_LAYOUT = {**_LAYOUT, "margin": dict(l=50, r=20, t=118, b=45)}
+
 
 def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
     if smile.empty:
@@ -268,19 +272,22 @@ def _expiry_label(expiry, dte) -> str:
 
 
 def _muted_heatmap_layers(z_all, z_hot, xcats, y, colorbar_title: str, zmin: float, zmax: float,
-                          hovertemplate: str, **subplot) -> list[go.Heatmap]:
+                          hovertemplate: str, hot_name: str = "beyond spread",
+                          showscale: bool = True, **subplot) -> list[go.Heatmap]:
     """Two layers: every cell faint, then only the non-muted cells at full
     opacity with the colorbar — SPEC 3 P7/P9's 'within-spread region muted'.
 
     `xcats` (not `x`) so that `**subplot`'s own `x=` (colorbar x-position,
     used by P9's two-subplot layout) doesn't collide with the heatmap's
-    x-axis categories parameter.
+    x-axis categories parameter. `showscale=False` keeps the trace (and so
+    the trace count the P9 toggle's `visible` arrays depend on) while
+    suppressing a second colorbar for a scale that is already shown.
     """
     common = dict(x=xcats, y=y, colorscale="RdBu", zmid=0, zmin=zmin, zmax=zmax,
                   hoverongaps=False, hovertemplate=hovertemplate)
     return [
         go.Heatmap(z=z_all, opacity=0.3, showscale=False, name="within spread", **common),
-        go.Heatmap(z=z_hot, opacity=1.0, showscale=True, name="beyond spread",
+        go.Heatmap(z=z_hot, opacity=1.0, showscale=showscale, name=hot_name,
                    colorbar=dict(title=colorbar_title, **subplot), **common),
     ]
 
@@ -323,23 +330,28 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
     for layer in _muted_heatmap_layers(
             z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order, z_all.index.tolist(),
             ("C − P − e⁻ʳᵀ(F − K), $" if calibrated else "C − P − parity, $"), -lim, lim,
-            "%{x}<br>K %{y}: %{z:+.2f} $<extra></extra>"):
+            "%{x}<br>K %{y}: %{z:+.2f} $<extra></extra>",
+            hot_name="unexplained"):
         fig.add_trace(layer)
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=spot, y1=spot,
                   line=dict(color="grey", width=1, dash="dot"))
+    # Both notes sit ABOVE the plot area (paper coords, anchored by their bottom
+    # edge), never over the top row of cells or the y-axis labels. They are
+    # mutually exclusive: a close-based frame has no tradeable violations to
+    # explain. `_PARITY_LAYOUT` gives them the headroom under the title.
+    note = dict(xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
+                xanchor="left", yanchor="bottom", font=dict(size=11, color="#555"))
     if p["spread"].notna().sum() == 0:
         fig.add_annotation(text="close-based session — spreads unknown, tradeability not assessable",
-                           xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
-                           xanchor="left", font=dict(size=11, color="#555"))
+                           **note)
     n_ee = int((explained & liquid).sum())
     if n_ee:
         fig.add_annotation(
             text=(f"{n_ee} put-rich gap{'' if n_ee == 1 else 's'} within the American "
                   f"early-exercise bound {'is' if n_ee == 1 else 'are'} shown muted "
                   "— not arbitrage"),
-            xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
-            xanchor="left", font=dict(size=11, color="#555"))
-    fig.update_layout(title=title, **_LAYOUT)
+            **note)
+    fig.update_layout(title=title, **_PARITY_LAYOUT)
     fig.update_xaxes(title_text="Expiry")
     fig.update_yaxes(title_text="Strike")
     return fig
@@ -362,11 +374,16 @@ def build_model_vs_market_figure(mvm: pd.DataFrame, flat_vol: float) -> go.Figur
             z_all = g.pivot(index="strike", columns="label", values=col).reindex(columns=order)
             z_hot = (g.assign(hot=g[col].where(~g["within_spread"]))
                        .pivot(index="strike", columns="label", values="hot").reindex(columns=order))
+            # Both subplots of a metric share zmin/zmax, so ONE colorbar says
+            # everything — and it goes to the right of the whole figure. Drawing
+            # a second at x=0.46 put it inside the Puts subplot, on top of its
+            # y-axis tick labels. The trace itself stays, so the toggle's
+            # `visible` arrays still line up 4-for-4.
             layers = _muted_heatmap_layers(
                 z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order,
                 z_all.index.tolist(), cb_title, -lim, lim,
                 "%{x}<br>K %{y}: " + fmt + "<extra>" + kind + "</extra>",
-                x=1.02 if ci == 2 else 0.46, len=0.9)
+                showscale=(ci == 2), x=1.02, len=0.9)
             for layer in layers:
                 layer.visible = (mi == 0)
                 fig.add_trace(layer, row=1, col=ci)
