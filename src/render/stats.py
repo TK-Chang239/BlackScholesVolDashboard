@@ -124,6 +124,9 @@ def hedge_summary_html(summary: dict) -> str:
             f"cumulative P&L {money} over {summary['n_days']} sessions")
 
     n = summary["n_settled"]
+    slope = summary.get("slope", float("nan"))
+    r2 = summary.get("r2", float("nan"))
+    fit_usable = np.isfinite(slope) and np.isfinite(r2)
     if n == 0:
         when = summary["next_settlement"]
         tail = ("; none has reached expiry yet, so the P&L-vs-edge scatter is still empty"
@@ -133,9 +136,16 @@ def hedge_summary_html(summary: dict) -> str:
     elif n < 5:
         tail = (f"; {n} trades have settled — too few to read a line through, "
                 "so the fit is drawn but not claimed")
+    elif not fit_usable:
+        # np.polyfit still returns NaN for a degenerate fit -- e.g. every settled
+        # trade sharing one edge value, a vertical cloud with no line through it.
+        # Plenty of trades, but nothing to report: same "not claimed" outcome as
+        # too few of them, just a different reason, so say the actual reason.
+        tail = (f"; {n} trades have settled, but their edges are too similar to "
+                "fit a line through — the fit is drawn but not claimed")
     else:
-        tail = (f"; across {n} settled trades the fit is ${summary['slope']:.2f} of P&L "
-                f"per vol point of edge (R² {summary['r2']:.2f})")
+        tail = (f"; across {n} settled trades the fit is ${slope:.2f} of P&L "
+                f"per vol point of edge (R² {r2:.2f})")
 
     share = summary.get("market_mark_share", float("nan"))
     if np.isfinite(share) and share < 0.999:

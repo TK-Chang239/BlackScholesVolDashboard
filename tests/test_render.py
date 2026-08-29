@@ -859,6 +859,17 @@ class TestHedgeScatterAndStat:
         pts = [t for t in fig.data if t.mode and "markers" in t.mode][0]
         assert len(pts.x) == 3
 
+    def test_scatter_omits_settled_trades_with_no_pnl(self):
+        # Symmetric with fit_pnl_vs_edge's own filter: a settled trade missing
+        # its P&L should not appear on the scatter even though it has an edge.
+        from src.render.hedge_figures import build_hedge_scatter_figure
+        trades = self._settled()
+        trades.loc[3, "pnl"] = float("nan")
+        fig = build_hedge_scatter_figure(trades, {"n": 3, "slope": 1.0,
+                                                  "intercept": 0.0, "r2": 1.0})
+        pts = [t for t in fig.data if t.mode and "markers" in t.mode][0]
+        assert len(pts.x) == 3
+
     def test_scatter_empty_state_names_the_next_settlement(self):
         import datetime as dt
         from src.render.hedge_figures import build_hedge_scatter_figure
@@ -913,6 +924,19 @@ class TestHedgeSummaryHtml:
                                                 slope=2.4, r2=0.71))
         assert "2.4" in html and "vol point" in html.lower()
         assert "0.71" in html or "71" in html
+
+    def test_a_few_settled_trades_draws_but_does_not_claim_the_fit(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=3, n_settled=3, n_open=0,
+                                                slope=1.5, r2=0.5))
+        assert "too few" in html.lower()
+        assert "1.5" not in html and "0.5" not in html
+
+    def test_degenerate_fit_does_not_print_a_fabricated_slope(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=6, n_settled=6, n_open=0,
+                                                slope=float("nan"), r2=float("nan")))
+        assert "nan" not in html.lower()
 
     def test_no_trades_at_all(self):
         from src.render.stats import hedge_summary_html

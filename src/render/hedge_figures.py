@@ -72,7 +72,8 @@ def build_hedge_scatter_figure(trades: pd.DataFrame, fit: dict,
     lifetime realized vol yet.
     """
     title = "Per-trade P&L vs (entry IV − realized vol)"
-    settled = (trades[(trades["status"] == "settled") & trades["edge"].notna()]
+    settled = (trades[(trades["status"] == "settled") & trades["edge"].notna()
+                       & trades["pnl"].notna()]
                if not trades.empty else trades)
     if settled.empty:
         when = (f" The first settles {next_settlement.isoformat()}."
