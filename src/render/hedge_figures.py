@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from src.analytics.hedge_sim import MODEL_MARK_SOURCES
 from src.render.base import LAYOUT, empty_figure
 
 _PNL_AXIS = "P&L ($ per share)"
@@ -52,16 +53,22 @@ def build_hedge_histogram_figure(daily: pd.DataFrame) -> go.Figure:
     A MODEL-marked day prices the straddle with `bs_price` at the carried-forward
     IV, so it moves with spot and time decay at frozen vol and has no vol
     mark-to-market in it at all: those days are Black-Scholes-conforming by
-    construction. The scatter and the fit already refuse them (that is what
-    `MIN_MARKET_MARK_SHARE` is for); admitting them here narrowed the measured
-    width towards the answer the model wants.
+    construction. Admitting them here narrows the measured width towards the
+    answer the model wants.
+
+    BOTH kinds of model mark go, `model_structural` included. That split exists
+    to decide whether a trade's coverage is good enough to plot as a dot -- a
+    session inside `chain_filter.dte_min` is unquotable by design and so is not
+    held against the trade. It says nothing about the mark itself: a structural
+    day is still a frozen-vol model price, and it would flatter this histogram
+    exactly as much as a gap day would.
     """
     empty = empty_figure("Daily hedged P&L — distribution",
                          "Not enough market-quoted sessions yet to show a distribution.")
     if daily.empty:
         return empty
     kept = daily[(daily["date"] != daily["entry_date"])
-                 & (daily["mark_source"] != "model")]
+                 & ~daily["mark_source"].isin(MODEL_MARK_SOURCES)]
     if kept.empty:
         return empty
     daily_pnl = kept.groupby("date")["pnl_day"].sum().dropna()
@@ -104,7 +111,8 @@ def build_hedge_scatter_figure(trades: pd.DataFrame, fit: dict,
             carries = "none carries" if reached != 1 else "it does not carry"
             return empty_figure(
                 title, f"{reached} simulated trade{plural} reached expiry, but "
-                       f"{carries} enough market-quoted marks to plot.")
+                       f"{carries} enough market-quoted marks on the sessions "
+                       "the stored archive could have quoted it on.")
         when = (f" The first settles {next_settlement.isoformat()}."
                 if next_settlement is not None else "")
         return empty_figure(title, "No simulated trade has reached expiry yet." + when)

@@ -155,6 +155,96 @@ def _tenor_clause(summary: dict) -> str:
             else f", sold {lo}–{hi} days from expiry")
 
 
+def _pct_not_total(x: float) -> str:
+    """`x` as a whole percent, never rounded INTO a totality it does not have.
+
+    `f"{0.9972:.0%}"` is "100%" -- and the 0.28% it rounds away is the very thing
+    the sentence exists to disclose. Around 200 quotable sessions with a single
+    gap mark in them reaches that, which this archive does inside a year. The
+    same trap sits at the bottom: one model mark in 400 renders as "0% of daily
+    marks are our own model", denying the disclosure it is making. Round
+    normally, then step back off either end whenever the true value is not
+    actually 0 or 1.
+    """
+    pct = round(x * 100)
+    if pct >= 100 and x < 1.0:
+        return "over 99%"
+    if pct <= 0 and x > 0.0:
+        return "under 1%"
+    return f"{pct}%"
+
+
+def _mark_source_clause(summary: dict) -> str:
+    """How much of the P&L is our own model, split into unavoidable and avoidable.
+
+    Two different situations put a session on a model mark and the page has to
+    keep them apart, because they answer different questions.
+
+    STRUCTURAL -- `chain_filter.dte_min` means no stored chain ever holds an
+    expiry closer than that, so over its final `dte_min` days a trade's own
+    expiry is absent from every chain in the archive. That is permanent, a
+    property of this panel rather than a shortage of data, and it is why a
+    trade's status is judged only over the sessions a chain could have quoted.
+
+    GAP -- the archive holds no usable quote for this straddle on a session
+    where one could have existed. This IS missing data, and it is the only kind
+    that makes a trade `sparse`. It is NOT the same as an absent session:
+    `_quote` also fails on a chain that IS stored but whose `(expiry, strike)`
+    pair lost a leg to an unconverged IV or to `filter_chain`'s moneyness gate.
+    Saying "the archive does not carry that session" would assert a cause the
+    data can contradict -- the F2 mistake, one layer up.
+
+    EVERY kind present is counted by name, and the P8a caption promises exactly
+    that. Reporting only the blend and the structural count left a reader to
+    subtract for the gap count, and gating the whole clause on a ROUNDED share
+    could suppress it entirely while model marks existed -- so the gate is
+    `n_model_marks`, an exact count, and the percentages go through
+    `_pct_not_total`.
+    """
+    n_model = int(summary.get("n_model_marks", 0))
+    share = summary.get("market_mark_share", float("nan"))
+    if not n_model or not np.isfinite(share):
+        return ""
+    n_structural = int(summary.get("n_structural_marks", 0))
+    n_gap = n_model - n_structural
+    dte_min = summary.get("dte_min")
+    window = (f"inside {dte_min} days of expiry" if dte_min is not None
+              else "inside the archive's minimum days to expiry")
+    gap_phrase = ("sessions the stored archive holds no usable quote for that "
+                  "straddle on — the chain file missing, or present without that "
+                  "expiry and strike on both legs")
+    structural_phrase = (f"fall {window}, where the stored chain never carries the "
+                         "expiry at all — the final stretch of any trade held to "
+                         "expiry is modelled by design, and no backfill can change "
+                         "that")
+    text = (f". {_pct_not_total(1 - share)} of daily marks are our own model at the "
+            "last quoted vol, not a market quote")
+
+    if not n_structural:
+        # Nothing was unquotable by design here, so there is no split to draw and
+        # no denominator to narrow: name the gap count and say so.
+        return text + (f". All {n_model} of those modelled sessions are {gap_phrase}"
+                       "; none of this sample was unquotable by design, so each "
+                       "trade is judged on every one of its sessions")
+    if not n_gap:
+        text += f". All {n_model} of them {structural_phrase}"
+    else:
+        text += (f". {n_structural} of those {n_model} modelled sessions "
+                 f"{structural_phrase}; the other {n_gap} are {gap_phrase}")
+
+    quotable = summary.get("quotable_mark_share", float("nan"))
+    if not np.isfinite(quotable):
+        return text
+    # State the share itself, so "that share" below has something to point at,
+    # and say what it is a blend OF: the gate runs per trade, and a reader who
+    # took this aggregate for the per-trade number could not square it with the
+    # exclusions listed next. `_pct_not_total` keeps a near-miss off "100%".
+    return text + (". Over the remaining sessions — the ones a stored chain could "
+                   f"have quoted — {_pct_not_total(quotable)} of marks come from the "
+                   "market; it is that share, measured per trade, that decides which "
+                   "trades reach the scatter")
+
+
 def hedge_summary_html(summary: dict) -> str:
     """The P8 stat line. Never describes a slope the sample cannot support."""
     label = _sim_label(summary.get("cost_bps", 0.0))
@@ -196,8 +286,13 @@ def hedge_summary_html(summary: dict) -> str:
         # the same sentence, which already carried that trade's round trip.
         plural = "s have" if reached != 1 else " has"
         carries = "none carries" if reached != 1 else "it does not carry"
+        # Name the SAME rule the sparse-exclusion sentence and the scatter's own
+        # empty state name. This branch fires in exactly the state the structural
+        # split exists to resolve, so an unqualified "enough market marks" here
+        # reads as the old, blended bar that no short-tenor trade could clear.
         tail = (f"; {reached} trade{plural} reached expiry but {carries} enough market "
-                "marks to plot, so the P&L-vs-edge scatter is still empty")
+                "marks on the sessions the archive could have quoted, so the "
+                "P&L-vs-edge scatter is still empty")
     elif n == 1:
         tail = "; exactly one trade has settled — one round trip, not a relationship"
     elif n < 5:
@@ -214,22 +309,13 @@ def hedge_summary_html(summary: dict) -> str:
         tail = (f"; across {n} settled trades the fit is ${slope:.2f} of P&L "
                 f"per vol point of edge (R² {r2:.2f})")
 
-    share = summary.get("market_mark_share", float("nan"))
-    if np.isfinite(share) and share < 0.999:
-        # The old clause blamed an expiry dropping out of the chain in its final
-        # week. That is one cause among several and it is stated unconditionally,
-        # so on a sparse archive -- where whole months of chains are simply
-        # absent -- it asserts a cause the data contradicts. State only what is
-        # true by construction: a model mark is exactly a session the archive
-        # could not quote this straddle on.
-        tail += (f". {1 - share:.0%} of daily marks are our own model at the last quoted "
-                 "vol, not a market quote — the stored archive carries no usable quote "
-                 "for that straddle on those sessions")
+    tail += _mark_source_clause(summary)
     # When nothing has settled, the branch above has already said that every
     # finished trade is off the scatter; repeating it here would be redundant.
     if summary["n_sparse"] and n > 0:
         tail += (f". {summary['n_sparse']} trade(s) are excluded from the scatter for "
-                 "having too few market marks")
+                 "having too few market marks on the sessions the archive could "
+                 "have quoted")
     skipped = summary["n_months_skipped"]
     if skipped:
         tail += (f". {skipped} month{'s' if skipped != 1 else ''} in the archive produced "

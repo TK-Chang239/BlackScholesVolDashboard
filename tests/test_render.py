@@ -331,6 +331,32 @@ class TestPagePhase4:
         assert "stale mark" in cap
         assert "are still not arbitrage" not in cap
 
+    def test_p8_captions_do_not_claim_a_missing_session_they_cannot_prove(self):
+        # R2: a `model_gap` day is not necessarily an absent session. `_quote`
+        # also returns None on a chain that IS stored but whose (expiry, strike)
+        # pair lost a leg to an unconverged IV or to filter_chain's moneyness
+        # gate -- the case test_chain_present_but_missing_the_quoted_pair_is_
+        # model_marked covers. "The archive simply does not carry that session"
+        # asserts a cause the data can contradict: the F2 mistake, re-entering
+        # through a static caption twenty lines under a stat line that hedges
+        # the identical claim correctly.
+        from src.render.page import CAPTIONS
+        for pid in ("P8a", "P8c"):
+            cap = CAPTIONS[pid]
+            assert "the archive simply does not carry" not in cap
+            assert "the ones the archive is missing" not in cap
+            assert "no usable quote" in cap
+        assert "for that straddle" in CAPTIONS["P8a"]
+
+    def test_p8a_caption_promises_only_the_counts_the_stat_line_gives(self):
+        # R1: the promise must stay scoped to the kinds that actually occur --
+        # `_mark_source_clause` names a count for each kind present and none for
+        # one that is absent. The three shapes are asserted behaviourally in
+        # TestHedgeSummaryHtml; this pins the sentence they back.
+        from src.render.page import CAPTIONS
+        assert ("Where either kind occurs, the stat line above gives its count"
+                in CAPTIONS["P8a"])
+
 
 class TestSkewFigure:
     def _metrics(self, dates, skews):
@@ -761,7 +787,8 @@ class TestHedgeFigures:
             "strike": [100.0], "dte_at_entry": [30], "entry_iv": [0.20],
             "entry_straddle": [6.0], "exit_date": [dt.date(2026, 6, 5)],
             "exit_value": [4.0], "pnl": [1.5], "n_days": [4],
-            "n_market_marks": [4], "n_model_marks": [0], "market_mark_share": [1.0],
+            "n_market_marks": [4], "n_model_marks": [0], "n_structural_marks": [0],
+            "market_mark_share": [1.0], "quotable_mark_share": [1.0],
             "lifetime_rv": [0.12], "edge": [0.08], "status": ["open"],
         })
 
@@ -820,7 +847,7 @@ class TestHedgeFigures:
                      dt.date(2026, 6, 10), dt.date(2026, 6, 11), dt.date(2026, 6, 12)],
             "entry_date": [dt.date(2026, 6, 1)] * 3 + [dt.date(2026, 6, 10)] * 3,
             "pnl_day": [0.0, 1.0, -0.5, 0.0, 2.0, -1.0],
-            "mark_source": ["market", "market", "model",
+            "mark_source": ["market", "market", "model_gap",
                             "market", "market", "settlement"],
         })
 
@@ -863,11 +890,26 @@ class TestHedgeFigures:
         only_entries_and_models = pd.DataFrame({
             "date": [dt.date(2026, 6, 1), dt.date(2026, 6, 2)],
             "entry_date": [dt.date(2026, 6, 1)] * 2,
-            "pnl_day": [0.0, 1.0], "mark_source": ["market", "model"],
+            "pnl_day": [0.0, 1.0], "mark_source": ["market", "model_gap"],
         })
         fig = build_hedge_histogram_figure(only_entries_and_models)
         assert len(fig.data) == 0
         assert fig.layout.annotations[0].text
+
+    def test_histogram_excludes_both_kinds_of_model_day(self):
+        # The structural/gap split exists to decide which TRADES are quoted well
+        # enough to plot as a dot. It changes nothing here: a structural day is
+        # still a frozen-vol model price, and it would flatter this histogram
+        # exactly as much as a gap day would. Both stay out.
+        import datetime as dt
+        days = [dt.date(2026, 6, i) for i in range(1, 5)]
+        daily = pd.DataFrame({
+            "date": days, "entry_date": [days[0]] * 4,
+            "pnl_day": [0.0, 1.0, -0.5, -0.25],
+            "mark_source": ["market", "market", "model_gap", "model_structural"],
+        })
+        x, _ = self._hist_x(daily)
+        assert x == [1.0]
 
     def test_histogram_is_empty_state_with_no_trades(self):
         from src.analytics.hedge_sim import DAILY_COLUMNS
@@ -887,7 +929,8 @@ class TestHedgeScatterAndStat:
             "exit_date": [dt.date(2026, m + 1, 17) for m in range(3, 3 + n)],
             "exit_value": [4.0] * n, "pnl": [1.0, 2.0, 3.0, 4.0][:n],
             "n_days": [30] * n, "n_market_marks": [27] * n, "n_model_marks": [3] * n,
-            "market_mark_share": [0.9] * n,
+            "n_structural_marks": [2] * n,
+            "market_mark_share": [0.9] * n, "quotable_mark_share": [27 / 28] * n,
             "lifetime_rv": [0.19, 0.18, 0.17, 0.16][:n],
             "edge": [0.01, 0.02, 0.03, 0.04][:n], "status": ["settled"] * n,
         })
@@ -972,6 +1015,8 @@ class TestHedgeSummaryHtml:
                 "n_reached_expiry": 0, "n_months_skipped": 0,
                 "first_entry": dt.date(2026, 8, 14),
                 "cum_pnl": 1.25, "n_days": 11, "market_mark_share": 1.0,
+                "quotable_mark_share": 1.0, "n_model_marks": 0,
+                "n_structural_marks": 0, "n_gap_marks": 0, "dte_min": 7,
                 "dte_at_entry_min": 35, "dte_at_entry_max": 35,
                 "next_settlement": dt.date(2026, 9, 18),
                 "slope": float("nan"), "r2": float("nan")}
@@ -1038,7 +1083,9 @@ class TestHedgeSummaryHtml:
 
     def test_model_marked_share_is_disclosed_when_material(self):
         from src.render.stats import hedge_summary_html
-        html = hedge_summary_html(self._summary(market_mark_share=0.82))
+        html = hedge_summary_html(self._summary(market_mark_share=0.82,
+                                                quotable_mark_share=0.82,
+                                                n_model_marks=9, n_gap_marks=9))
         assert "18%" in html or "82%" in html
 
     def test_model_marked_share_does_not_assert_a_cause_the_data_contradicts(self):
@@ -1046,9 +1093,121 @@ class TestHedgeSummaryHtml:
         # final week" unconditionally. On the real archive 12 of 13 model marks
         # come from a month holding NO chain at all, on any day of the trade.
         from src.render.stats import hedge_summary_html
-        html = hedge_summary_html(self._summary(market_mark_share=0.48))
+        html = hedge_summary_html(self._summary(market_mark_share=0.48,
+                                                quotable_mark_share=0.48,
+                                                n_model_marks=13, n_gap_marks=13))
         assert "52%" in html
         assert "final week" not in html.lower()
+        assert "modelled by design" not in html
+
+    def test_structural_model_marks_are_named_as_by_design_not_as_missing_data(self):
+        # The defect a real run exposed: a 16-day trade's final week can never
+        # carry a quote, because chain_filter.dte_min keeps its expiry out of
+        # every stored chain. The page must still report how much of the P&L is
+        # our own model AT ALL (38%), say plainly why most of it is unavoidable,
+        # and give the share the status is actually judged on.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(
+            market_mark_share=0.625, quotable_mark_share=1.0, n_model_marks=6,
+            n_structural_marks=6, n_gap_marks=0, dte_min=7))
+        assert "38% of daily marks are our own model" in html      # modelled at all
+        assert "All 6 of them fall inside 7 days of expiry" in html
+        assert "modelled by design" in html and "no backfill can change that" in html
+        # nothing avoidable: quotable is EXACTLY 1.0, so 100% is not a rounding
+        assert "100% of marks come from the market" in html
+        assert "measured per trade" in html   # 100% here is a blend, the gate is not
+
+    def test_the_structural_window_named_is_the_configured_dte_min(self):
+        # config is the single source of tunables (SPEC 6): 7 must not be baked
+        # into the sentence any more than into the engine.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(
+            market_mark_share=0.5, quotable_mark_share=0.8, n_model_marks=10,
+            n_structural_marks=4, n_gap_marks=6, dte_min=14))
+        assert "inside 14 days of expiry" in html
+        assert "7 days" not in html
+        assert "80% of marks come from the market" in html
+
+    def test_a_sample_with_no_structural_marks_claims_no_structural_split(self):
+        # F2 still holds: where every model mark is a real gap -- the 2024 trade,
+        # whose whole life has no chain files -- the sentence must not blame a
+        # by-design final week for it.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(
+            market_mark_share=0.48, quotable_mark_share=0.48, n_model_marks=13,
+            n_structural_marks=0, n_gap_marks=13, dte_min=7))
+        assert "52% of daily marks are our own model" in html
+        assert "modelled by design" not in html
+        assert "fall inside 7 days of expiry" not in html
+        assert "holds no usable quote for that straddle" in html
+
+    def test_every_kind_of_model_mark_present_is_given_its_own_count(self):
+        # R1: the P8a caption promises "where either kind occurs, the stat line
+        # above gives its count". Reporting the blend and the structural count
+        # only left the reader to subtract for the gap count.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(
+            market_mark_share=0.6, quotable_mark_share=0.75, n_model_marks=16,
+            n_structural_marks=6, n_gap_marks=10, dte_min=7))
+        assert "6 of those 16 modelled sessions" in html    # structural and total
+        assert "the other 10 are" in html                   # and the gap count
+
+    def test_a_gap_only_sample_still_gives_the_gap_count(self):
+        # R1: this branch used to return a bare percentage -- gap marks present,
+        # their count nowhere on the page. It is the shape of any sample whose
+        # trades are all mid-life, and the shape this archive had in July.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(
+            market_mark_share=0.5, quotable_mark_share=0.5, n_model_marks=12,
+            n_structural_marks=0, n_gap_marks=12))
+        assert "All 12 of those modelled sessions" in html
+
+    def test_a_lone_model_mark_is_disclosed_though_the_share_rounds_to_all(self):
+        # R1/R4: the clause used to be gated on `market_mark_share < 0.999`, so a
+        # model mark inside that band vanished from the page entirely -- the
+        # disclosure suppressed by a rounding threshold rather than by an actual
+        # absence. The gate is now the exact count, and neither percentage rounds
+        # INTO a totality: 0.05% modelled is "under 1%", never "0%", and the
+        # quotable share beside it is "over 99%", never "100%".
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(
+            market_mark_share=0.9995, quotable_mark_share=0.9995,
+            n_model_marks=1, n_structural_marks=0, n_gap_marks=1))
+        assert "under 1% of daily marks are our own model" in html
+        assert "0% of daily marks" not in html
+        assert "All 1 of those modelled sessions" in html
+
+    def test_a_near_total_quotable_share_is_not_rounded_up_to_all_of_them(self):
+        # R4: at 0.9972 `{:.0%}` printed "100% of marks come from the market"
+        # while a gap mark existed. ~200 quotable sessions with one gap in them
+        # reaches that, which this archive does inside a year.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(
+            market_mark_share=0.95, quotable_mark_share=0.9972, n_model_marks=20,
+            n_structural_marks=19, n_gap_marks=1))
+        assert "over 99% of marks come from the market" in html
+        assert "100%" not in html
+
+    def test_that_share_always_has_a_percentage_to_point_at(self):
+        # R3: the fully-quoted branch read "... is marked at a market price; it
+        # is that share ..." with no share anywhere in the sentence.
+        from src.render.stats import hedge_summary_html
+        for quotable in (1.0, 0.75):
+            html = hedge_summary_html(self._summary(
+                market_mark_share=0.6, quotable_mark_share=quotable,
+                n_model_marks=16, n_structural_marks=6, n_gap_marks=10))
+            assert "of marks come from the market" in html
+            pct = html.index("of marks come from the market")
+            assert "it is that share" in html
+            assert html.index("it is that share", pct) > pct   # antecedent first
+
+    def test_nothing_plottable_yet_names_the_quotable_rule_not_a_bare_one(self):
+        # R5: this branch fires in exactly the state the structural split exists
+        # to resolve, and named a different rule than the two sentences beside it.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=2, n_settled=0, n_sparse=1,
+                                                n_reached_expiry=1, n_open=1))
+        assert "enough market marks on the sessions the archive could have quoted" in html
 
     def test_a_settled_but_sparse_trade_is_not_reported_as_nothing_finished(self):
         # F1: the stat line contradicted itself -- "none has reached expiry yet"

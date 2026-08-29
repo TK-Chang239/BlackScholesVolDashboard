@@ -3,6 +3,7 @@ import datetime as dt
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.data.hedge_replay import replay_hedge_sim
 
@@ -14,7 +15,9 @@ CFG = {
 }
 
 
-def write_archive(root, dates, expiry, spot=100.0):
+def write_archive(root, dates, expiry, spot=100.0, underlying_dates=None):
+    """`underlying_dates` defaults to `dates`; pass it when the close series has
+    to run past the last STORED chain (chain_filter.dte_min truncates it)."""
     (root / "data" / "chains").mkdir(parents=True)
     for d in dates:
         rows = []
@@ -30,8 +33,10 @@ def write_archive(root, dates, expiry, spot=100.0):
                     "vendor_iv": np.nan, "source": "massive-backfill",
                 })
         pd.DataFrame(rows).to_parquet(root / "data" / "chains" / f"{d.isoformat()}.parquet")
-    u = pd.DataFrame({"date": dates, "close": [spot] * len(dates),
-                      "adjusted_close": [spot] * len(dates), "volume": [1.0] * len(dates)})
+    u_dates = list(dates if underlying_dates is None else underlying_dates)
+    u = pd.DataFrame({"date": u_dates, "close": [spot] * len(u_dates),
+                      "adjusted_close": [spot] * len(u_dates),
+                      "volume": [1.0] * len(u_dates)})
     u.to_parquet(root / "data" / "underlying.parquet")
 
 
@@ -161,3 +166,50 @@ def test_empty_archive_is_not_an_error(tmp_path):
     out = replay_hedge_sim(tmp_path, 0.04, 0.013, CFG)
     assert out["trades"].empty
     assert out["summary"]["n_trades"] == 0
+
+
+def test_a_trade_unquoted_only_inside_dte_min_settles_through_the_driver(tmp_path):
+    """The defect a real run exposed, end to end through the replay driver.
+
+    `chain_filter.dte_min = 7` keeps a 16-day trade's own expiry out of every
+    stored chain over its final week, so at best 10 of its 16 sessions can carry
+    a market mark -- 0.625, permanently under MIN_MARKET_MARK_SHARE. Judged over
+    the sessions a chain COULD have quoted it is 10/10, and it belongs on the
+    scatter. On the real archive this is the 2026-07-01 -> 2026-07-17 trade.
+    """
+    from src.analytics.hedge_sim import MIN_MARKET_MARK_SHARE
+
+    dte_min = CFG["chain_filter"]["dte_min"]
+    entry = dt.date(2026, 6, 1)
+    expiry = entry + dt.timedelta(days=16)
+    sessions = [entry + dt.timedelta(days=i) for i in range(17)]
+    stored = [d for d in sessions if (expiry - d).days >= dte_min]
+    write_archive(tmp_path, stored, expiry=expiry, underlying_dates=sessions)
+
+    out = replay_hedge_sim(tmp_path, 0.04, 0.013, CFG)
+    trade = out["trades"].iloc[0]
+    assert trade["n_model_marks"] == trade["n_structural_marks"] == 6
+    assert trade["market_mark_share"] < MIN_MARKET_MARK_SHARE     # the old, blended rule
+    assert trade["quotable_mark_share"] == 1.0
+    assert trade["status"] == "settled"
+    s = out["summary"]
+    assert s["n_settled"] == 1 and s["n_sparse"] == 0
+    assert s["dte_min"] == dte_min          # cfg["chain_filter"]["dte_min"], threaded through
+    assert s["n_structural_marks"] == 6 and s["n_gap_marks"] == 0
+
+
+def test_a_trade_the_archive_never_covers_stays_sparse_through_the_driver(tmp_path):
+    # The discrimination the threshold was written for: same tenor, but the
+    # archive holds only the entry session, so nine quotable days are simply
+    # missing. On the real archive this is the 2024-09-03 trade.
+    entry = dt.date(2026, 6, 1)
+    expiry = entry + dt.timedelta(days=16)
+    sessions = [entry + dt.timedelta(days=i) for i in range(17)]
+    write_archive(tmp_path, [entry], expiry=expiry, underlying_dates=sessions)
+
+    out = replay_hedge_sim(tmp_path, 0.04, 0.013, CFG)
+    trade = out["trades"].iloc[0]
+    assert trade["n_structural_marks"] == 6
+    assert trade["quotable_mark_share"] == pytest.approx(0.1)
+    assert trade["status"] == "sparse"
+    assert out["summary"]["n_sparse"] == 1 and out["summary"]["n_settled"] == 0

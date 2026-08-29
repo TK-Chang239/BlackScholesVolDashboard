@@ -229,7 +229,9 @@ class TestSimulateTrade:
         del chains[entry + dt.timedelta(days=2)]
         daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
         row = daily[daily["date"] == entry + dt.timedelta(days=2)].iloc[0]
-        assert row["mark_source"] == "model"
+        # 28 days from expiry, far outside chain_filter.dte_min: the archive
+        # COULD have quoted this session and did not, so it is a real gap.
+        assert row["mark_source"] == "model_gap"
         assert row["straddle"] > 0
         assert trade["n_model_marks"] == 1
         assert trade["n_market_marks"] == trade["n_days"] - 1
@@ -245,7 +247,7 @@ class TestSimulateTrade:
         chains[d] = c
         daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
         row = daily[daily["date"] == d].iloc[0]
-        assert row["mark_source"] == "model"
+        assert row["mark_source"] == "model_gap"
         assert trade["n_model_marks"] == 1
         assert trade["n_market_marks"] == trade["n_days"] - 1
 
@@ -256,15 +258,96 @@ class TestSimulateTrade:
         daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
         prev_row = daily[daily["date"] == d - dt.timedelta(days=1)].iloc[0]
         row = daily[daily["date"] == d].iloc[0]
-        assert row["mark_source"] == "model"
+        assert row["mark_source"] == "model_gap"
         assert row["call_iv"] == pytest.approx(prev_row["call_iv"])
         assert row["put_iv"] == pytest.approx(prev_row["put_iv"])
 
     def test_mostly_model_marked_trade_is_reported_sparse(self):
         entry, expiry, sel, chains, u = self._setup([100.0] * 8, n_chain_days=2)
         daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
-        assert trade["market_mark_share"] < MIN_MARKET_MARK_SHARE
+        assert trade["quotable_mark_share"] < MIN_MARKET_MARK_SHARE
         assert trade["status"] == "sparse"
+
+    # ---- structural vs gap model marks (the defect a real run exposed) ----
+    #
+    # `chain_filter.dte_min` means a stored chain never holds an expiry closer
+    # than that, so over its final `dte_min` days a trade's own expiry is absent
+    # from EVERY stored chain by design. Counting those days against the trade
+    # made MIN_MARKET_MARK_SHARE unreachable for the ~16-18 day tenors the entry
+    # rule actually produces: on the real archive the July 2026 trade topped out
+    # at 7/11 = 0.64 and was permanently `sparse`, so the scatter -- the whole
+    # point of the panel -- could never populate.
+
+    def _structural_setup(self, horizon=16, dte_min=7):
+        """A short-tenor trade whose ONLY unquoted days are inside `dte_min`.
+
+        Every session the archive's filter permits carries a chain; nothing at
+        all is missing. `horizon=16` is the tenor the real entry rule delivers
+        (the monthly ladder offers ~17 days or ~46, never ~30), which is exactly
+        the case the blended share could not clear.
+        """
+        cfg = {**CFG, "chain_filter": {**CFG["chain_filter"], "dte_min": dte_min},
+               "hedge_sim": {**CFG["hedge_sim"], "entry_dte": horizon}}
+        entry = dt.date(2026, 6, 1)
+        expiry = entry + dt.timedelta(days=horizon)
+        u = make_underlying(entry, [100.0] * (horizon + 1))
+        chains = {entry + dt.timedelta(days=i):
+                  make_chain(entry + dt.timedelta(days=i), 100.0, {expiry: 0.20})
+                  for i in range(horizon - dte_min + 1)}    # last stored chain is at dte_min
+        sel = select_straddle(chains[entry], cfg)
+        assert sel is not None
+        return entry, expiry, sel, chains, u, cfg
+
+    def test_a_trade_unquoted_only_inside_dte_min_settles(self):
+        entry, expiry, sel, chains, u, cfg = self._structural_setup()
+        daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, cfg)
+        assert trade["n_model_marks"] == trade["n_structural_marks"] == 6
+        # The blend CANNOT clear the bar: 10 of 16 sessions, and no backfill
+        # could add a seventeenth. That is what made this trade unplottable.
+        assert trade["market_mark_share"] < MIN_MARKET_MARK_SHARE
+        # Judged over the sessions a chain could have quoted, it is perfect.
+        assert trade["quotable_mark_share"] == pytest.approx(1.0)
+        assert trade["status"] == "settled"
+
+    def test_a_trade_starved_of_chains_is_still_sparse(self):
+        # The other side of the same discrimination: this archive holds the entry
+        # chain and nothing else, so 9 sessions that COULD have been quoted were
+        # not. Excusing the structural days must not excuse these.
+        entry, expiry, sel, chains, u, cfg = self._structural_setup()
+        daily, trade = simulate_trade(entry, sel, {entry: chains[entry]}, u,
+                                      0.04, 0.013, cfg)
+        assert trade["n_structural_marks"] == 6      # unchanged: a property of the tenor
+        assert trade["n_model_marks"] == 15
+        assert trade["quotable_mark_share"] == pytest.approx(0.1)   # settlement only
+        assert trade["status"] == "sparse"
+
+    def test_model_marks_are_labelled_structural_or_gap_by_days_to_expiry(self):
+        entry, expiry, sel, chains, u, cfg = self._structural_setup()
+        daily, _ = simulate_trade(entry, sel, {entry: chains[entry]}, u, 0.04, 0.013, cfg)
+        source = dict(zip(daily["date"], daily["mark_source"]))
+        assert source[entry + dt.timedelta(days=9)] == "model_gap"          # 7 dte
+        assert source[entry + dt.timedelta(days=10)] == "model_structural"  # 6 dte
+
+    def test_the_structural_window_is_read_from_config_not_hard_coded(self):
+        # dte_min is a config tunable (SPEC 6). Widening the filter must move the
+        # boundary; 7 must never be baked into the engine.
+        entry, expiry, sel, chains, u, cfg = self._structural_setup()
+        starved = {entry: chains[entry]}
+        _, seven = simulate_trade(entry, sel, starved, u, 0.04, 0.013, cfg)
+        wider = {**cfg, "chain_filter": {**cfg["chain_filter"], "dte_min": 11}}
+        _, eleven = simulate_trade(entry, sel, starved, u, 0.04, 0.013, wider)
+        assert seven["n_structural_marks"] == 6      # 6..1 dte
+        assert eleven["n_structural_marks"] == 10    # 10..1 dte
+        assert seven["n_model_marks"] == eleven["n_model_marks"] == 15
+
+    def test_settlement_stays_a_market_mark_though_its_dte_is_inside_the_window(self):
+        # Settlement is intrinsic from the underlying close -- a market fact, at
+        # 0 dte. It belongs in the numerator, not in the excluded denominator.
+        entry, expiry, sel, chains, u, cfg = self._structural_setup()
+        daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, cfg)
+        assert daily["mark_source"].iloc[-1] == "settlement"
+        assert trade["n_market_marks"] == trade["n_days"] - trade["n_model_marks"]
+        assert trade["n_days"] - trade["n_structural_marks"] == 10   # 9 quoted + settlement
 
     def test_transaction_costs_reduce_pnl(self):
         closes = [100.0, 103.0, 97.0, 104.0, 99.0]
@@ -439,8 +522,9 @@ class TestHedgeSummary:
             "dte_at_entry": list(dtes)[:n],
             "pnl": [1.0, -0.5, 0.25][:n], "edge": [0.01, 0.02, 0.03][:n],
             "n_days": [30, 20, 10][:n], "n_market_marks": [27, 20, 1][:n],
-            "n_model_marks": [3, 0, 9][:n],
-            "market_mark_share": [0.9, 1.0, 0.1][:n], "status": list(statuses),
+            "n_model_marks": [3, 0, 9][:n], "n_structural_marks": [2, 0, 3][:n],
+            "market_mark_share": [0.9, 1.0, 0.1][:n],
+            "quotable_mark_share": [27 / 28, 1.0, 1 / 7][:n], "status": list(statuses),
         })
 
     def test_counts_statuses_and_reports_the_next_settlement(self):
@@ -507,6 +591,25 @@ class TestHedgeSummary:
         assert np.isnan(s["cum_pnl"])
         assert s["n_reached_expiry"] == 0 and s["n_months_skipped"] == 0
         assert s["dte_at_entry_min"] is None and s["dte_at_entry_max"] is None
+        assert np.isnan(s["market_mark_share"]) and np.isnan(s["quotable_mark_share"])
+        assert s["n_model_marks"] == s["n_structural_marks"] == s["n_gap_marks"] == 0
+
+    def test_publishes_both_mark_shares_and_the_structural_split(self):
+        # Both counts have to reach the page: `market_mark_share` says how much
+        # of the P&L is our own model AT ALL, `quotable_mark_share` how much of
+        # it was avoidable -- and the second is what the status gate reads.
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
+                             "pnl_cum": [1.0], "n_open": [1]})
+        s = hedge_summary(self._trades(["settled", "open"]), port, NO_FIT, dte_min=7)
+        assert s["market_mark_share"] == pytest.approx(47 / 50)   # 50 sessions
+        assert s["quotable_mark_share"] == pytest.approx(47 / 48)  # 2 unquotable
+        assert (s["n_model_marks"], s["n_structural_marks"], s["n_gap_marks"]) == (3, 2, 1)
+        assert s["dte_min"] == 7
+
+    def test_dte_min_defaults_to_none_so_the_page_can_omit_the_window(self):
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
+                             "pnl_cum": [1.0], "n_open": [1]})
+        assert hedge_summary(self._trades(["settled"]), port, NO_FIT)["dte_min"] is None
 
     def test_cost_bps_defaults_to_zero_and_passes_through_when_given(self):
         # M3: `_sim_label` (src/render/stats.py) needs the configured

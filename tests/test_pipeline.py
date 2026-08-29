@@ -249,7 +249,10 @@ class TestRenderStage:
                     "hedge_trades_sparse", "hedge_trades_reached_expiry",
                     "hedge_months_skipped", "hedge_cum_pnl", "hedge_sessions",
                     "hedge_dte_at_entry_min", "hedge_dte_at_entry_max",
-                    "hedge_market_mark_share", "hedge_slope_per_vol_point", "hedge_r2"):
+                    "hedge_market_mark_share", "hedge_quotable_mark_share",
+                    "hedge_model_marks", "hedge_model_marks_structural",
+                    "hedge_model_marks_gap",
+                    "hedge_slope_per_vol_point", "hedge_r2"):
             assert key in status
         assert status["hedge_trades"] == 0
         # the month WAS considered and rejected -- that must be visible, not silent
@@ -420,6 +423,11 @@ class TestPhase5Stage:
         # the tenor the sim actually traded, not config's entry_dte: 30
         assert status["hedge_dte_at_entry_min"] == 28
         assert status["hedge_dte_at_entry_max"] == 28
+        # the structural/gap split reaches status.json: this trade is one session
+        # old, so nothing is modelled either avoidably or by design yet
+        assert status["hedge_model_marks"] == 0
+        assert status["hedge_model_marks_structural"] == 0
+        assert status["hedge_model_marks_gap"] == 0
         page = (tmp_path / "docs" / "index.html").read_text()
         assert "1 simulated trade since 2026-08-28" in page
         assert "sold 28 days from expiry" in page

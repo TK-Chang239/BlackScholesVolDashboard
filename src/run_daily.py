@@ -269,7 +269,19 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "hedge_dte_at_entry_min": hsum["dte_at_entry_min"],
         "hedge_dte_at_entry_max": hsum["dte_at_entry_max"],
         "hedge_cum_pnl": _round_or_none(hsum["cum_pnl"], 4),
+        # Two shares, because they answer different questions. The first counts
+        # every session, so a reader sees how much of the P&L is our own model at
+        # all. The second counts only sessions a stored chain could have quoted:
+        # `chain_filter.dte_min` keeps a trade's own expiry out of every chain
+        # over its final days, so those sessions are unquotable by construction
+        # and cannot be evidence of thin coverage. The second is what decides
+        # `settled` vs `sparse`; publishing only the first made the split
+        # invisible and the threshold look arbitrary.
         "hedge_market_mark_share": _round_or_none(hsum["market_mark_share"], 4),
+        "hedge_quotable_mark_share": _round_or_none(hsum["quotable_mark_share"], 4),
+        "hedge_model_marks": hsum["n_model_marks"],
+        "hedge_model_marks_structural": hsum["n_structural_marks"],
+        "hedge_model_marks_gap": hsum["n_gap_marks"],
         "hedge_slope_per_vol_point": _round_or_none(hsum["slope"], 4),
         "hedge_r2": _round_or_none(hsum["r2"], 4),
         "hedge_next_settlement": (hsum["next_settlement"].isoformat()

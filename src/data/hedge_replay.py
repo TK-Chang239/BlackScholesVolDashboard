@@ -38,5 +38,9 @@ def replay_hedge_sim(root: Path, r: float, q: float, cfg: dict,
     port = portfolio_daily(daily)
     fit = fit_pnl_vs_edge(trades)
     cost_bps = float(cfg["hedge_sim"]["transaction_cost_bps"])
+    # The stat line names the window inside which an expiry is absent from every
+    # stored chain by design; that number is config's, not the render layer's.
+    dte_min = int(cfg["chain_filter"]["dte_min"])
     return {"trades": trades, "daily": daily, "portfolio": port, "fit": fit,
-            "summary": hedge_summary(trades, port, fit, months_skipped, cost_bps)}
+            "summary": hedge_summary(trades, port, fit, months_skipped, cost_bps,
+                                     dte_min)}
