@@ -110,3 +110,43 @@ class TestSensitivityFigure:
         fig = build_sensitivity_figure(compute_sensitivity(770.0, float("nan"), 30, 0.04, 0.01, 0.2))
         assert not [t for t in fig.data if t.type == "bar"]
         assert fig.layout.annotations and "No" in fig.layout.annotations[0].text
+
+
+class TestGreekTiles:
+    def _tiles(self, theta=-36.5, vega=95.0, rho=31.0, delta=0.52):
+        import datetime as dt
+        return pd.DataFrame([{
+            "kind": "call", "expiry": dt.date(2026, 9, 25), "dte": 28, "strike": 770.0,
+            "iv": 0.12, "delta": delta, "gamma": 0.021, "vega": vega, "theta": theta, "rho": rho,
+        }])
+
+    def test_display_scaling(self):
+        from src.render.tiles import greek_tiles_html
+        html = greek_tiles_html(self._tiles(), None, "previous session")
+        assert "-0.100" in html          # theta/365 = -0.1 per day
+        assert "0.950" in html           # vega/100 per vol point
+        assert "0.310" in html           # rho/100 per 1%
+        assert "0.520" in html and "per day" in html and "per vol pt" in html
+
+    def test_one_day_change_line(self):
+        from src.render.tiles import greek_tiles_html
+        html = greek_tiles_html(self._tiles(delta=0.52), self._tiles(delta=0.50), "prev session 2026-08-27")
+        assert "+0.020" in html and "prev session 2026-08-27" in html
+
+    def test_empty_is_placeholder(self):
+        from src.render.tiles import greek_tiles_html
+        from src.analytics.greeks_panel import TILE_COLUMNS
+        html = greek_tiles_html(pd.DataFrame(columns=TILE_COLUMNS), None, "x")
+        assert "placeholder" in html
+
+
+class TestGreeksCurvesFigure:
+    def test_two_subplots_per_kind(self):
+        from src.render.figures import build_greeks_curves_figure
+        curves = pd.DataFrame({
+            "kind": ["call", "call", "put", "put"], "strike": [760.0, 780.0, 760.0, 780.0],
+            "moneyness": [0.987, 1.013, 0.987, 1.013],
+            "delta": [0.6, 0.4, -0.4, -0.6], "gamma": [0.02, 0.02, 0.02, 0.02]})
+        fig = build_greeks_curves_figure(curves, 770.0)
+        scatters = [t for t in fig.data if t.type == "scatter" and t.name in ("call", "put")]
+        assert len(scatters) == 4 and {t.xaxis for t in scatters} == {"x", "x2"}

@@ -88,3 +88,26 @@ def build_sensitivity_figure(sens: pd.DataFrame) -> go.Figure:
     fig.update_layout(title=title, barmode="overlay", **_LAYOUT)
     fig.update_xaxes(title_text="Price change", tickformat="+.0%")
     return fig
+
+
+def build_greeks_curves_figure(curves: pd.DataFrame, spot: float) -> go.Figure:
+    title = "Delta and gamma across strikes — ~30-DTE expiry, each at its own market IV"
+    if curves.empty:
+        return _empty_figure(title, "No converged quotes for the ~30-DTE expiry")
+    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.12,
+                        subplot_titles=("Delta vs strike", "Gamma vs strike"))
+    colors = {"call": "#4c72b0", "put": "#dd8452"}
+    for kind, g in curves.groupby("kind"):
+        g = g.sort_values("strike")
+        for col, y in ((1, "delta"), (2, "gamma")):
+            fig.add_trace(go.Scatter(
+                x=g["strike"], y=g[y], mode="lines+markers", name=kind,
+                legendgroup=kind, showlegend=(col == 1), marker=dict(size=4),
+                line=dict(color=colors.get(kind)),
+                hovertemplate="K %{x:.0f}: %{y:.4f}<extra>" + kind + "</extra>"),
+                row=1, col=col)
+    for col in (1, 2):
+        fig.add_vline(x=spot, line=dict(dash="dot", color="grey", width=1), row=1, col=col)
+    fig.update_layout(title=title, **_LAYOUT)
+    fig.update_xaxes(title_text="Strike")
+    return fig
