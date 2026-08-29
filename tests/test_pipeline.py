@@ -231,7 +231,7 @@ class TestRenderStage:
         own_markup = page.replace(_BUNDLE.read_text(), "")
         assert "https://cdn.plot.ly" not in own_markup
         assert 0.0 <= status["iv_convergence"] <= 1.0
-        assert status["panels_rendered"] == ["P2", "P3"]
+        assert status["panels_rendered"] == ["P1", "P2", "P3", "P4", "P5"]
         # status still written last and consistent with the page
         on_disk = json.loads((tmp_path / "docs" / "status.json").read_text())
         assert on_disk == status
@@ -343,3 +343,85 @@ class TestRenderStage:
         assert (tmp_path / "docs" / "status.json").read_text() == status_before
         # and no new chain file landed for the failed session either
         assert not storage.chain_exists(TODAY + dt.timedelta(days=1), tmp_path)
+
+
+class TestDailyMetricsStage:
+    def test_first_run_writes_one_metrics_row(self, tmp_path):
+        status = run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
+        assert len(m) == 1 and m["date"].iloc[0] == TODAY
+        assert m["source"].iloc[0] == "yfinance"
+        assert "rv_20d" in m.columns and "fwd_rv_30d" in m.columns
+        # single-strike fixture cannot bracket spot -> no ATM IV, and that is recorded honestly
+        assert np.isnan(m["atm_iv_30d"].iloc[0]) and status["atm_iv_30d"] is None
+        assert status["daily_metrics_rows"] == 1
+        assert status["history_since"] == TODAY.isoformat()
+
+    def test_second_session_appends_and_rerun_replaces(self, tmp_path):
+        run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        class NextDayEODHD(FakeEODHD):
+            def get_underlying_history(self, symbol, start=None):
+                df = underlying_frame()
+                extra = pd.DataFrame({"date": [TODAY + dt.timedelta(days=1)],
+                                      "close": [772.0], "adjusted_close": [772.0],
+                                      "volume": [1]})
+                return pd.concat([df, extra], ignore_index=True)
+        s2 = run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path,
+                 today=TODAY + dt.timedelta(days=1))
+        s3 = run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path,
+                 today=TODAY + dt.timedelta(days=1))
+        m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
+        assert list(m["date"]) == [TODAY, TODAY + dt.timedelta(days=1)]
+        assert s2["daily_metrics_rows"] == 2 and s3["daily_metrics_rows"] == 2
+
+    def test_bracketing_chain_records_atm_iv_and_renders_tiles(self, tmp_path):
+        from src.models.black_scholes import bs_price
+
+        def bracketing_chain(spot, expiry, dte):
+            T = dte / 365.0
+            rows = []
+            for strike in (spot - 20.0, spot, spot + 20.0):
+                for kind in ("call", "put"):
+                    price = float(bs_price(spot, strike, T, 0.0415, 0.20, 0.0098, kind))
+                    rows.append({
+                        "expiry": expiry, "strike": strike, "kind": kind,
+                        "bid": price - 0.05, "ask": price + 0.05, "mid": price,
+                        "close": price, "volume": 100, "open_interest": 500,
+                        "vendor_iv": 0.20, "source": "yfinance",
+                    })
+            return pd.DataFrame(rows)
+
+        class BracketingLive:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return bracketing_chain(spot, dt.date(2026, 9, 25), 28)
+
+        status = run(FakeEODHD(), BracketingLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert status["atm_iv_30d"] == pytest.approx(0.20, abs=1e-4)
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "class='tiles'" in page and "Delta" in page
+        # tornado rendered with data; plotly's default (no-orjson) JSON engine
+        # ASCII-escapes the non-ASCII sigma glyph in the "Volatility <sigma>"
+        # label inside the embedded figure JSON (renders correctly in-browser
+        # via JSON.parse, but never appears as the literal glyph in the raw
+        # HTML text) -- same "Volatility" substring precedent already used by
+        # test_render.py's sensitivity-figure test.
+        assert "Volatility" in page
+        assert "accumulating since" in page
+
+    def test_render_failure_leaves_metrics_untouched(self, tmp_path, monkeypatch):
+        run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        before = storage.daily_metrics_path(tmp_path).read_bytes()
+        import src.run_daily as rd
+        monkeypatch.setattr(rd, "render_page",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        class NextDayEODHD(FakeEODHD):
+            def get_underlying_history(self, symbol, start=None):
+                df = underlying_frame()
+                extra = pd.DataFrame({"date": [TODAY + dt.timedelta(days=1)],
+                                      "close": [772.0], "adjusted_close": [772.0],
+                                      "volume": [1]})
+                return pd.concat([df, extra], ignore_index=True)
+        with pytest.raises(RuntimeError):
+            run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path,
+                today=TODAY + dt.timedelta(days=1))
+        assert storage.daily_metrics_path(tmp_path).read_bytes() == before
