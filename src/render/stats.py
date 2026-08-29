@@ -112,10 +112,29 @@ def parity_summary_html(summary: dict, carry: dict | None,
 # otherwise, and almost the whole stored archive is backfill -- so "sold at the
 # mid" described a price the simulation has essentially never paid. Name the
 # rule instead, the way the P3 overlay label and the P7 stat line already do.
-_SIM_LABEL = ("Simulation for learning — a hypothetical short straddle entered and marked "
-              "at each session's stored price: the quote mid on live sessions, the official "
-              "close on backfilled (close-based) ones. Delta-hedged once a day on one share. "
-              "No bid–ask spread is ever crossed. Not a real position, not advice.")
+_SIM_LABEL_BASE = ("Simulation for learning — a hypothetical short straddle entered and marked "
+                   "at each session's stored price: the quote mid on live sessions, the official "
+                   "close on backfilled (close-based) ones. Delta-hedged once a day on one share.")
+
+
+def _sim_label(cost_bps: float) -> str:
+    """The P8 caption. `cost_bps` is `cfg["hedge_sim"]["transaction_cost_bps"]`.
+
+    "No bid-ask spread is ever crossed" was written as a permanent fact, but it
+    is only true because the config's transaction_cost_bps happens to be 0 --
+    the same config file says v2 adds a toggle, and `simulate_trade` already
+    charges that cost on every hedge trade once it is non-zero. State whichever
+    one the current run actually did, so a config flip cannot silently
+    falsify the published page.
+    """
+    if not cost_bps:
+        cost_clause = (" No bid–ask spread is charged — transaction_cost_bps is 0 in "
+                       "this run's config.")
+    else:
+        cost_clause = (f" Every re-hedge trade is charged a modeled {cost_bps:g} bps of "
+                       "the traded notional as a stand-in for the bid–ask spread it would "
+                       "actually cross.")
+    return _SIM_LABEL_BASE + cost_clause + " Not a real position, not advice."
 
 
 def _tenor_clause(summary: dict) -> str:
@@ -138,9 +157,22 @@ def _tenor_clause(summary: dict) -> str:
 
 def hedge_summary_html(summary: dict) -> str:
     """The P8 stat line. Never describes a slope the sample cannot support."""
+    label = _sim_label(summary.get("cost_bps", 0.0))
     if summary["n_trades"] == 0:
-        return (f"<p class='stat'>No simulated trade yet — the first opens on the first "
-                f"stored session of a month.</p><p class='caption'>{_SIM_LABEL}</p>")
+        text = ("No simulated trade yet — the first opens on the first "
+                "stored session of a month.")
+        # A month can come and go and still fail to seed a trade (no expiry
+        # near the target, no strike with both legs solved, no underlying
+        # close). Without this, an archive where EVERY month was skipped
+        # renders the sentence above -- which reads as "still pending" -- while
+        # status.json's hedge_months_skipped says several already came and none
+        # could seed one. Say so, the same way the n_trades > 0 branch below does.
+        skipped = summary["n_months_skipped"]
+        if skipped:
+            text += (f" {skipped} month{'s' if skipped != 1 else ''} in the archive "
+                     f"produced no trade — {'their' if skipped != 1 else 'its'} first "
+                     "stored session could not seed a straddle at the target tenor.")
+        return f"<p class='stat'>{text}</p><p class='caption'>{label}</p>"
 
     since = summary["first_entry"].isoformat()
     money = f"${summary['cum_pnl']:,.2f}" if np.isfinite(summary["cum_pnl"]) else "n/a"
@@ -203,4 +235,4 @@ def hedge_summary_html(summary: dict) -> str:
         tail += (f". {skipped} month{'s' if skipped != 1 else ''} in the archive produced "
                  f"no trade — {'their' if skipped != 1 else 'its'} first stored session "
                  "could not seed a straddle at the target tenor")
-    return f"<p class='stat'>{head}{tail}.</p><p class='caption'>{_SIM_LABEL}</p>"
+    return f"<p class='stat'>{head}{tail}.</p><p class='caption'>{label}</p>"

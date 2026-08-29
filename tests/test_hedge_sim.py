@@ -507,3 +507,17 @@ class TestHedgeSummary:
         assert np.isnan(s["cum_pnl"])
         assert s["n_reached_expiry"] == 0 and s["n_months_skipped"] == 0
         assert s["dte_at_entry_min"] is None and s["dte_at_entry_max"] is None
+
+    def test_cost_bps_defaults_to_zero_and_passes_through_when_given(self):
+        # M3: `_sim_label` (src/render/stats.py) needs the configured
+        # transaction_cost_bps to state "no spread is charged" only when it is
+        # actually true, and the render layer must not import config itself --
+        # so the value has to travel through this summary dict.
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
+                             "pnl_cum": [1.0], "n_open": [1]})
+        empty_port = pd.DataFrame(columns=["date", "pnl_day", "pnl_cum", "n_open"])
+        s_default = hedge_summary(pd.DataFrame(columns=TRADE_COLUMNS), empty_port, NO_FIT)
+        assert s_default["cost_bps"] == 0.0
+        s_given = hedge_summary(self._trades(["settled", "open"]), port, NO_FIT,
+                                n_months_skipped=0, cost_bps=5.0)
+        assert s_given["cost_bps"] == 5.0

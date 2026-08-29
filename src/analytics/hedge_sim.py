@@ -280,7 +280,7 @@ def fit_pnl_vs_edge(trades: pd.DataFrame) -> dict:
 
 
 def hedge_summary(trades: pd.DataFrame, port: pd.DataFrame, fit: dict,
-                  n_months_skipped: int = 0) -> dict:
+                  n_months_skipped: int = 0, cost_bps: float = 0.0) -> dict:
     """Everything the page's stat line and status.json need, in one dict.
 
     "Reached expiry" and "plottable" are DIFFERENT questions and the page needs
@@ -294,6 +294,12 @@ def hedge_summary(trades: pd.DataFrame, port: pd.DataFrame, fit: dict,
     of a month rarely offers one near it: the realized tenor is bimodal, round-trip
     P&L scales roughly with sqrt(T), and unreported that lands on the scatter as
     unexplained vertical spread.
+
+    `cost_bps` carries `cfg["hedge_sim"]["transaction_cost_bps"]` through so the
+    render layer can state the "no spread crossed" clause honestly without
+    importing config itself -- `simulate_trade` already charges this cost on
+    every hedge trade once it is non-zero, so a config flip must not leave a
+    stale claim standing on the page.
     """
     counts = trades["status"].value_counts().to_dict() if not trades.empty else {}
     open_trades = trades[trades["status"] == "open"] if not trades.empty else trades
@@ -317,4 +323,5 @@ def hedge_summary(trades: pd.DataFrame, port: pd.DataFrame, fit: dict,
                               if marks else float("nan")),
         "next_settlement": (open_trades["expiry"].min() if len(open_trades) else None),
         "slope": fit["slope"], "r2": fit["r2"],
+        "cost_bps": float(cost_bps),
     }

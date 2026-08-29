@@ -48,6 +48,19 @@ def test_replays_the_archive_and_returns_every_key(tmp_path):
     s = out["summary"]
     assert s["n_reached_expiry"] == 0 and s["n_months_skipped"] == 0
     assert s["dte_at_entry_min"] == s["dte_at_entry_max"] == 30
+    assert s["cost_bps"] == 0.0    # CFG's transaction_cost_bps, threaded through
+
+
+def test_the_configured_transaction_cost_reaches_the_summary(tmp_path):
+    # M3: `_sim_label` (src/render/stats.py) states "no spread is charged" only
+    # when the config actually says so; that means this driver has to carry
+    # cfg["hedge_sim"]["transaction_cost_bps"] into the summary rather than
+    # leaving the render layer to import config for itself.
+    dates = [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(6)]
+    write_archive(tmp_path, dates, expiry=dt.date(2026, 7, 1))
+    cfg = {**CFG, "hedge_sim": {**CFG["hedge_sim"], "transaction_cost_bps": 5}}
+    out = replay_hedge_sim(tmp_path, 0.04, 0.013, cfg)
+    assert out["summary"]["cost_bps"] == 5.0
 
 
 def test_a_month_that_cannot_seed_a_trade_is_counted_in_the_summary(tmp_path):

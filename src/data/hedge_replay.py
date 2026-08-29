@@ -37,5 +37,6 @@ def replay_hedge_sim(root: Path, r: float, q: float, cfg: dict,
     trades, daily, months_skipped = simulate(chains, underlying, r, q, cfg)
     port = portfolio_daily(daily)
     fit = fit_pnl_vs_edge(trades)
+    cost_bps = float(cfg["hedge_sim"]["transaction_cost_bps"])
     return {"trades": trades, "daily": daily, "portfolio": port, "fit": fit,
-            "summary": hedge_summary(trades, port, fit, months_skipped)}
+            "summary": hedge_summary(trades, port, fit, months_skipped, cost_bps)}

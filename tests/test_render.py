@@ -1021,6 +1021,20 @@ class TestHedgeSummaryHtml:
                                                 first_entry=None, next_settlement=None,
                                                 cum_pnl=float("nan")))
         assert "no simulated trade" in html.lower()
+        assert "produced no trade" not in html    # n_months_skipped is 0 -- nothing to disclose
+
+    def test_no_trades_but_every_month_was_skipped_still_discloses_the_count(self):
+        # M1: the n_trades == 0 early return used to print ONLY "No simulated
+        # trade yet -- the first opens on the first stored session of a month",
+        # which contradicts status.json's hedge_months_skipped on an archive
+        # where every month was skipped -- it reads as "still pending" when
+        # several months already came and went without seeding a trade.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=0, n_open=0, n_days=0,
+                                                first_entry=None, next_settlement=None,
+                                                cum_pnl=float("nan"), n_months_skipped=3))
+        assert "no simulated trade" in html.lower()
+        assert "3 months in the archive produced no trade" in html
 
     def test_model_marked_share_is_disclosed_when_material(self):
         from src.render.stats import hedge_summary_html
@@ -1079,9 +1093,10 @@ class TestHedgeSummaryHtml:
         # F3: `compute_chain_iv` routes price_used to the mid only for LIVE rows;
         # 27 of 28 stored chains are backfill, so every trade to date was entered
         # and marked at the close. Mirror the "(close-based)" convention.
-        from src.render.stats import _SIM_LABEL, hedge_summary_html
-        assert "sold at the mid" not in _SIM_LABEL
-        assert "close-based" in _SIM_LABEL and "close" in _SIM_LABEL
+        from src.render.stats import _sim_label, hedge_summary_html
+        label = _sim_label(0.0)
+        assert "sold at the mid" not in label
+        assert "close-based" in label and "close" in label
         for html in (hedge_summary_html(self._summary()),
                      hedge_summary_html(self._summary(n_trades=0, n_open=0, n_days=0,
                                                       first_entry=None,
@@ -1089,6 +1104,42 @@ class TestHedgeSummaryHtml:
                                                       cum_pnl=float("nan")))):
             assert "sold at the mid" not in html
             assert "close-based" in html
+
+    def test_sim_label_states_no_spread_is_charged_at_zero_cost(self):
+        # M3: "No bid-ask spread is ever crossed" was written as a permanent
+        # fact but is only true because transaction_cost_bps is 0 in config;
+        # config's own comment says v2 adds a toggle. Assert the zero-cost
+        # wording is conditioned on the config, not stated as eternal.
+        from src.render.stats import _sim_label
+        label = _sim_label(0.0)
+        assert "no bid–ask spread is ever crossed" not in label.lower()
+        assert "transaction_cost_bps is 0" in label
+        assert "not a real position" in label.lower()
+
+    def test_sim_label_states_the_configured_cost_when_nonzero(self):
+        # M3: a config flip to a non-zero transaction_cost_bps must not leave
+        # "no bid-ask spread is ever crossed" standing on the page --
+        # `simulate_trade` (src/analytics/hedge_sim.py) already charges this
+        # cost on every hedge trade once it is non-zero.
+        from src.render.stats import _sim_label
+        label = _sim_label(5.0)
+        assert "5 bps" in label
+        assert "no bid–ask spread is ever crossed" not in label.lower()
+        assert "transaction_cost_bps is 0" not in label
+        assert "not a real position" in label.lower()
+
+    def test_hedge_summary_html_threads_the_configured_cost_through(self):
+        # M3: `hedge_summary_html` receives only the summary dict, so the
+        # configured cost has to reach it via `summary["cost_bps"]` rather than
+        # an import of config into the render layer.
+        from src.render.stats import hedge_summary_html
+        html_default = hedge_summary_html(self._summary())          # no cost_bps key
+        html_zero = hedge_summary_html(self._summary(cost_bps=0.0))
+        html_nonzero = hedge_summary_html(self._summary(cost_bps=7.5))
+        assert "transaction_cost_bps is 0" in html_default
+        assert "transaction_cost_bps is 0" in html_zero
+        assert "7.5 bps" in html_nonzero
+        assert "transaction_cost_bps is 0" not in html_nonzero
 
 
 class TestP8Page:
@@ -1125,14 +1176,28 @@ class TestP8Page:
         cap = CAPTIONS["P8b"]
         assert "√T" in cap and "45-day" in cap and "17-day" in cap
 
-    def test_p8c_caption_says_the_histogram_counts_only_quoted_sessions(self):
+    def test_p8c_caption_says_the_histogram_counts_only_market_marked_sessions(self):
         # F6: the caption calls the width "the direct measurement", so it has to
         # say which days were measured.
         from src.render.page import CAPTIONS
         cap = CAPTIONS["P8c"]
-        assert "only the sessions the archive actually quotes" in cap
+        assert "counting only sessions marked at a market price" in cap
         assert "opening day is dropped" in cap
         assert "direct measurement" in cap      # the original claim is still made
+
+    def test_p8a_and_p8c_captions_admit_the_three_way_split(self):
+        # M2: settlement is neither a chain quote nor a model mark -- it prices
+        # the straddle at intrinsic from the underlying close, and (unlike a
+        # model mark) counts as a market fact in the P8c histogram. The old
+        # wording described only a quoted/model dichotomy; on the real archive
+        # the 2024-09-20 settlement is exactly the missing third case (no chain
+        # file exists for that date at all).
+        from src.render.page import CAPTIONS
+        assert "settlement is marked at intrinsic value" in CAPTIONS["P8a"]
+        assert "settlement at intrinsic value" in CAPTIONS["P8c"]
+        # neither caption may still claim a plain quoted/model binary
+        assert "the archive actually quotes" not in CAPTIONS["P8c"]
+        assert "sessions the archive holds no quote for" not in CAPTIONS["P8a"]
 
     def test_scatter_caption_states_the_gamma_pnl_result_and_the_hedging_error(self):
         from src.render.page import CAPTIONS
