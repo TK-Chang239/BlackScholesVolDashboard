@@ -90,8 +90,13 @@ class TestPage:
             assert must in html, must
 
     def test_missing_panel_renders_placeholder(self):
+        # Phase 6 retired the last "arrives in Phase N" placeholder (Q4's), so
+        # every question's `coming` string is now "" -- but the placeholder
+        # markup itself must still render (empty) rather than raise or vanish,
+        # since a degraded run could still hand render_page an incomplete
+        # figures dict.
         html = render_page({}, fake_status())
-        assert "Phase" in html                       # 'arrives in Phase N' notes
+        assert html.count("class='placeholder'") == 5
         assert "<html" in html
 
 
@@ -949,3 +954,35 @@ class TestHedgeSummaryHtml:
         from src.render.stats import hedge_summary_html
         html = hedge_summary_html(self._summary(market_mark_share=0.82))
         assert "18%" in html or "82%" in html
+
+
+class TestP8Page:
+    def test_q4_lists_the_three_p8_panels(self):
+        from src.render.page import QUESTIONS
+        q4 = [q for q in QUESTIONS if q[0] == "Q4"][0]
+        assert q4[2] == ["P8a", "P8b", "P8c"]
+
+    def test_every_p8_panel_has_a_title_and_a_caption(self):
+        from src.render.page import CAPTIONS, _PANEL_TITLES
+        for pid in ("P8a", "P8b", "P8c"):
+            assert _PANEL_TITLES[pid]
+            assert CAPTIONS[pid]
+
+    def test_scatter_caption_states_the_gamma_pnl_result_and_the_hedging_error(self):
+        from src.render.page import CAPTIONS
+        cap = CAPTIONS["P8b"].lower()
+        assert "gamma" in cap or "Γ" in CAPTIONS["P8b"]
+        assert "discrete" in cap and "hedg" in cap
+
+    def test_page_renders_the_p8_panels_and_the_simulation_label(self):
+        from src.render.page import _PANEL_TITLES, render_page
+        from src.render.base import empty_figure
+        figures = {pid: empty_figure(pid, "x") for pid in ("P8a", "P8b", "P8c")}
+        status = {"spot": 100.0, "snapshot_date": "2026-08-28", "source": "yfinance",
+                  "iv_convergence": 0.99, "last_success_utc": "2026-08-29T00:00:00+00:00",
+                  "rows_stored": 10}
+        html = render_page(figures, status, extras={"P8a": "<p class='stat'>SIMLABEL</p>"})
+        assert "SIMLABEL" in html
+        assert "Phase 6" not in html          # the Q4 placeholder is gone
+        for pid in ("P8a", "P8b", "P8c"):
+            assert _PANEL_TITLES[pid] in html

@@ -27,13 +27,17 @@ from src.analytics.smile import compute_smile
 from src.analytics.term_structure import compute_term_structure
 from src.data import storage
 from src.data.filters import filter_chain
+from src.data.hedge_replay import replay_hedge_sim
 from src.render.figures import (
     build_greeks_curves_figure, build_iv_rv_figure, build_model_vs_market_figure,
     build_parity_figure, build_sensitivity_figure, build_skew_figure,
     build_smile_figure, build_term_structure_figure,
 )
+from src.render.hedge_figures import (
+    build_hedge_histogram_figure, build_hedge_pnl_figure, build_hedge_scatter_figure,
+)
 from src.render.page import render_page
-from src.render.stats import parity_summary_html
+from src.render.stats import hedge_summary_html, parity_summary_html
 from src.render.tiles import greek_tiles_html
 
 STALENESS_DAYS = 5
@@ -175,6 +179,15 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     # ---- P9 model vs market at the same flat vol P1 uses ----
     mvm = compute_model_vs_market(chain_iv, sigma_p1, risk_free_rate, dividend_yield)
 
+    # ---- P8 hedge simulation: a full stateless replay of the stored archive.
+    # Today's chain is not on disk yet (SPEC 2.1: compute before write), so it is
+    # handed in directly -- otherwise the current session would be invisible to
+    # the sim until tomorrow.
+    hedge = replay_hedge_sim(root, risk_free_rate, dividend_yield, cfg,
+                             extra_chains={session_date: chain_iv},
+                             underlying=sorted_underlying)
+    hsum = hedge["summary"]
+
     # P6 annotations are decoration and the file is designed to be hand-edited
     # ("adding a news note is a 1-line commit"), so a typo in it is the EXPECTED
     # failure -- and this call sits after the whole compute stage but before any
@@ -198,11 +211,16 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "P5": build_iv_rv_figure(series, summary, cfg),
         "P6": build_skew_figure(metrics, annotations),
         "P7": build_parity_figure(parity, spot),
+        "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["daily"]),
+        "P8b": build_hedge_scatter_figure(hedge["trades"], hedge["fit"],
+                                          next_settlement=hsum["next_settlement"]),
+        "P8c": build_hedge_histogram_figure(hedge["portfolio"]),
         "P9": build_model_vs_market_figure(mvm, sigma_p1),
     }
     extras = {"P4": greek_tiles_html(tiles, tiles_prev, prev_label),
               "P5": iv_rv_summary_html(summary),
-              "P7": parity_summary_html(psum, carry, risk_free_rate, dividend_yield)}
+              "P7": parity_summary_html(psum, carry, risk_free_rate, dividend_yield),
+              "P8a": hedge_summary_html(hsum)}
 
     status = {
         "last_success_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -235,6 +253,17 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "implied_carry_dte_max": _int_or_none(carry["dte_max"]),
         "implied_carry_expiries": int(carry["n_expiries"]),
         "implied_carry_statistic": _carry_statistic(carry),
+        "hedge_trades": hsum["n_trades"],
+        "hedge_trades_settled": hsum["n_settled"],
+        "hedge_trades_open": hsum["n_open"],
+        "hedge_trades_sparse": hsum["n_sparse"],
+        "hedge_sessions": hsum["n_days"],
+        "hedge_cum_pnl": _round_or_none(hsum["cum_pnl"], 4),
+        "hedge_market_mark_share": _round_or_none(hsum["market_mark_share"], 4),
+        "hedge_slope_per_vol_point": _round_or_none(hsum["slope"], 4),
+        "hedge_r2": _round_or_none(hsum["r2"], 4),
+        "hedge_next_settlement": (hsum["next_settlement"].isoformat()
+                                  if hsum["next_settlement"] is not None else None),
         "panels_rendered": sorted(figures),
     }
     html = render_page(figures, status, extras=extras)

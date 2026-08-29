@@ -231,7 +231,18 @@ class TestRenderStage:
         own_markup = page.replace(_BUNDLE.read_text(), "")
         assert "https://cdn.plot.ly" not in own_markup
         assert 0.0 <= status["iv_convergence"] <= 1.0
-        assert status["panels_rendered"] == ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P9"]
+        assert status["panels_rendered"] == sorted(
+            ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8a", "P8b", "P8c", "P9"])
+        # P8 hedge-sim keys (Phase 6): the single-strike fixture (700 only,
+        # ~9% OTM of spot 770) can never seed an at-the-money straddle, so the
+        # simulation runs but stays empty -- this is still the right place to
+        # assert the keys exist, since the shape of status.json must hold
+        # whether or not any trade could be opened.
+        for key in ("hedge_trades", "hedge_trades_settled", "hedge_trades_open",
+                    "hedge_trades_sparse", "hedge_cum_pnl", "hedge_sessions",
+                    "hedge_market_mark_share", "hedge_slope_per_vol_point", "hedge_r2"):
+            assert key in status
+        assert status["hedge_trades"] == 0
         # status still written last and consistent with the page
         on_disk = json.loads((tmp_path / "docs" / "status.json").read_text())
         assert on_disk == status
@@ -368,7 +379,12 @@ class TestPhase5Stage:
         assert "Put-call parity checker" in page and "Model-vs-market" in page
         assert "25-delta skew" in page
         assert "arrives in Phase 5" not in page
-        assert "arrives in Phase 6" in page              # Q4 still pending
+        # Phase 6 retires the Q4 placeholder: the P8 panels render (in their
+        # own empty state, since this single-strike fixture is ~9% OTM of spot
+        # and can never seed an at-the-money straddle) rather than a
+        # "arrives in Phase N" note.
+        assert "arrives in Phase 6" not in page
+        assert "Cumulative P&L" in page
 
     def test_wide_chain_records_skew_and_zero_violations(self, tmp_path):
         from src.models.black_scholes import bs_price

@@ -97,6 +97,34 @@ CAPTIONS = {
         "model-free check is why desks trust Black-Scholes "
         "as a quoting convention even when they distrust it as a forecast."
     ),
+    "P8a": (
+        "On the first stored session of each month this simulation sells one "
+        "at-the-money straddle about 30 days out and delta-hedges it once a day "
+        "with this project's own Black-Scholes deltas, at each leg's own market "
+        "implied vol. Cash earns the risk-free rate and the hedge earns the "
+        "dividend yield, so the line below is the whole position: option marks, "
+        "share hedge, carry. The thin grey lines are the individual trades; the "
+        "blue line is their sum."
+    ),
+    "P8b": (
+        "The money chart. Each dot is one round trip: what the straddle was sold "
+        "at, minus what the underlying actually went on to realize, against the "
+        "dollars the hedged position made or lost. Black-Scholes predicts the "
+        "relationship — a delta-hedged short option earns about "
+        "½ Γ S² (σ²_implied − σ²_realized) dt per day, so selling vol above what "
+        "arrives should pay and selling it below should not. The slope is that "
+        "prediction measured on real quotes. The scatter around the line is not "
+        "noise to be explained away: it is discrete-hedging error, the price of "
+        "re-hedging once a day instead of continuously, plus the vol "
+        "mark-to-market the model assumes away."
+    ),
+    "P8c": (
+        "The same P&L, one session at a time. Black-Scholes says a perfectly "
+        "hedged option position has no risk left; a histogram with visible width "
+        "is the direct measurement of how wrong that is at a daily hedging "
+        "frequency. The spread is gamma and vol moves; the centre is the premium "
+        "being earned or bled."
+    ),
     "P9": (
         "Price every contract with one flat volatility — today's ~30-day "
         "at-the-money implied vol — and compare to the market. The error is not "
@@ -116,7 +144,7 @@ QUESTIONS = [
     ("Q3", "Is implied volatility a prediction, or a price?",
      ["P5"], ""),
     ("Q4", "The model claims you can hedge an option perfectly. Can you?",
-     [], "Delta-hedged P&L simulation arrives in Phase 6."),
+     ["P8a", "P8b", "P8c"], ""),
     ("Q5", "Given all these flaws, why does every desk still use Black-Scholes?",
      ["P7"], ""),
 ]
@@ -129,6 +157,9 @@ _PANEL_TITLES = {
     "P5": "Implied vs realized volatility",
     "P6": "25-delta skew — time series",
     "P7": "Put-call parity checker",
+    "P8a": "Cumulative P&L — simulated delta-hedged straddles",
+    "P8b": "Per-trade P&L vs (entry IV − realized vol)",
+    "P8c": "Daily hedged P&L — distribution",
     "P9": "Model-vs-market price heatmap",
 }
 
