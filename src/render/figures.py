@@ -1,14 +1,18 @@
 """Plotly figure builders for the dashboard panels. Pure: frames in, Figure out."""
+from datetime import timedelta
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 _LAYOUT = dict(
     template="plotly_white",
-    margin=dict(l=50, r=20, t=40, b=45),
-    height=420,
-    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    margin=dict(l=50, r=20, t=100, b=45),
+    height=460,
+    legend=dict(orientation="h", yanchor="bottom", y=1.12),
     font=dict(size=13),
+    title_y=0.97,
+    title_yanchor="top",
 )
 
 
@@ -69,8 +73,8 @@ def _empty_figure(title: str, message: str, **layout) -> go.Figure:
     return fig
 
 
-def build_sensitivity_figure(sens: pd.DataFrame) -> go.Figure:
-    title = "Which input moves the price? ±20% on each, ~30-DTE ATM call"
+def build_sensitivity_figure(sens: pd.DataFrame, bump: float) -> go.Figure:
+    title = f"Which input moves the price? ±{bump:.0%} on each, ~30-DTE ATM call"
     if sens.empty or sens["up_pct"].isna().all():
         return _empty_figure(title, "No ATM implied vol for this session")
     fig = make_subplots(
@@ -78,11 +82,13 @@ def build_sensitivity_figure(sens: pd.DataFrame) -> go.Figure:
         subplot_titles=("Inputs the market argues about", "Inputs everyone observes"))
     for col, group in ((1, "argued"), (2, "observed")):
         g = sens[sens["group"] == group].sort_values("span")   # biggest bar on top
-        for tag, color, name in (("down_pct", "#c44e52", "input −20%"),
-                                 ("up_pct", "#4c72b0", "input +20%")):
+        for tag, color, name in (("down_pct", "#c44e52", f"input −{bump:.0%}"),
+                                 ("up_pct", "#4c72b0", f"input +{bump:.0%}")):
             fig.add_trace(go.Bar(
                 y=g["label"], x=g[tag], orientation="h", name=name,
                 marker_color=color, showlegend=(col == 1),
+                text=g[tag], texttemplate="%{x:+.1%}", textposition="outside",
+                cliponaxis=False,
                 hovertemplate="%{y}: %{x:+.1%}<extra>" + name + "</extra>"),
                 row=1, col=col)
     fig.update_layout(title=title, barmode="overlay", **_LAYOUT)
@@ -143,5 +149,8 @@ def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Fig
                        font=dict(size=11, color="#555"), xanchor="left")
     fig.update_layout(title=title, **_LAYOUT)
     fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", secondary_y=False)
-    fig.update_yaxes(title_text="Spread", tickformat="+.0%", secondary_y=True, showgrid=False)
+    fig.update_yaxes(title_text="Spread", tickformat="+.1%", secondary_y=True, showgrid=False)
+    first, last = series["date"].iloc[0], series["date"].iloc[-1]
+    if (last - first).days > 365:
+        fig.update_xaxes(range=[last - timedelta(days=180), last + timedelta(days=3)])
     return fig

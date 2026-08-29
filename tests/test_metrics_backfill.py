@@ -60,6 +60,12 @@ class TestRebuild:
         assert out["fwd_rv_30d"].notna().iloc[0] and out["fwd_rv_30d"].isna().iloc[1]
         assert storage.daily_metrics_path(tmp_path).exists()
 
+    def test_ignores_stray_tmp_parquet(self, tmp_path):
+        seed(tmp_path)
+        (tmp_path / "data" / "chains" / "2026-01-01.tmp.parquet").write_bytes(b"")
+        out = rebuild_daily_metrics(tmp_path, R, Q, cfg())
+        assert len(out) == 2
+
     def test_write_false_leaves_disk_untouched(self, tmp_path):
         seed(tmp_path)
         rebuild_daily_metrics(tmp_path, R, Q, cfg(), write=False)

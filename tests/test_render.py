@@ -99,7 +99,7 @@ class TestSensitivityFigure:
     def test_two_subplots_and_two_bar_traces_each(self):
         from src.analytics.sensitivity import compute_sensitivity
         from src.render.figures import build_sensitivity_figure
-        fig = build_sensitivity_figure(compute_sensitivity(770.0, 0.12, 30, 0.04, 0.01, 0.20))
+        fig = build_sensitivity_figure(compute_sensitivity(770.0, 0.12, 30, 0.04, 0.01, 0.20), 0.20)
         bars = [t for t in fig.data if t.type == "bar"]
         assert len(bars) == 4                        # (down, up) x (argued, observed)
         assert {t.xaxis for t in bars} == {"x", "x2"}
@@ -108,7 +108,7 @@ class TestSensitivityFigure:
     def test_nan_input_renders_annotation(self):
         from src.analytics.sensitivity import compute_sensitivity
         from src.render.figures import build_sensitivity_figure
-        fig = build_sensitivity_figure(compute_sensitivity(770.0, float("nan"), 30, 0.04, 0.01, 0.2))
+        fig = build_sensitivity_figure(compute_sensitivity(770.0, float("nan"), 30, 0.04, 0.01, 0.2), 0.2)
         assert not [t for t in fig.data if t.type == "bar"]
         assert fig.layout.annotations and "No" in fig.layout.annotations[0].text
 
@@ -186,6 +186,36 @@ class TestIvRvFigure:
         s = pd.DataFrame(columns=IV_RV_COLUMNS)
         fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
         assert not fig.data and fig.layout.annotations
+
+    def test_wide_span_defaults_to_last_180_days(self):
+        import yaml
+        from src.analytics.iv_rv import iv_rv_summary
+        from src.render.figures import build_iv_rv_figure
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        dates = [dt.date(2024, 9, 3)] + \
+            [dt.date(2026, 8, 20) + dt.timedelta(days=i) for i in range(3)]
+        s = pd.DataFrame({"date": dates, "atm_iv": [0.16, 0.12, 0.13, 0.14],
+                          "rv_trailing": [0.11, 0.10, 0.10, 0.11],
+                          "fwd_rv": [0.11, np.nan, np.nan, np.nan],
+                          "spread": [0.05, 0.02, 0.03, 0.03],
+                          "spread_running_mean": [0.05, 0.035, 0.0333, 0.0325]})
+        fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
+        rng = fig.layout.xaxis.range
+        assert rng is not None
+        last = dates[-1]
+        lower = pd.Timestamp(rng[0]).date()
+        assert (last - lower).days <= 180
+
+    def test_short_span_leaves_autorange(self):
+        import yaml
+        from src.analytics.iv_rv import iv_rv_summary
+        from src.render.figures import build_iv_rv_figure
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        s = self._series()
+        fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
+        assert fig.layout.xaxis.range is None
 
 
 class TestPagePhase4:

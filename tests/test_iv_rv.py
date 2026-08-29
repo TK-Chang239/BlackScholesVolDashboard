@@ -64,7 +64,30 @@ class TestSummary:
         assert summ["share_iv_above_fwd_rv"] == pytest.approx(2 / 3)
         assert summ["mean_spread_trailing"] == pytest.approx(0.02)
         html = iv_rv_summary_html(summ)
-        assert "67%" in html and "3 evaluable" in html and D[0].isoformat() in html
+        assert "3 sessions" in html and "2 of them" in html and "too few" in html
+
+    def test_single_evaluable_day_is_not_a_rate(self):
+        m = metrics([{"date": D[0], "atm_iv_30d": 0.161, "rv_20d": 0.10, "fwd_rv_30d": 0.1115}])
+        summ = iv_rv_summary(iv_rv_series(m, cfg()))
+        assert summ["evaluable_days"] == 1
+        assert summ["last_evaluable_iv"] == pytest.approx(0.161)
+        assert summ["last_evaluable_fwd_rv"] == pytest.approx(0.1115)
+        html = iv_rv_summary_html(summ)
+        assert "100%" not in html
+        assert "1 session" in html and "16.1%" in html and "11.2%" in html
+        assert "not a rate" in html
+
+    def test_percentage_sentence_at_ge_10_days(self):
+        dates = [dt.date(2026, 1, 1) + dt.timedelta(days=i) for i in range(10)]
+        rows = [{"date": d, "atm_iv_30d": 0.12, "rv_20d": 0.10,
+                 "fwd_rv_30d": 0.11 if i % 2 == 0 else 0.13}
+                for i, d in enumerate(dates)]
+        summ = iv_rv_summary(iv_rv_series(metrics(rows), cfg()))
+        assert summ["evaluable_days"] == 10
+        html = iv_rv_summary_html(summ)
+        assert "evaluable" in html and "days" in html
+        assert f"{summ['share_iv_above_fwd_rv']:.0%}" in html
+        assert dates[0].isoformat() in html
 
     def test_no_evaluable_days(self):
         m = metrics([{"date": D[0], "atm_iv_30d": 0.12, "rv_20d": 0.10, "fwd_rv_30d": np.nan}])

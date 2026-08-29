@@ -28,7 +28,8 @@ def rebuild_daily_metrics(root: Path, r: float, q: float, cfg: dict,
                           write: bool = True) -> pd.DataFrame:
     root = Path(root)
     metrics = pd.DataFrame(columns=metric_columns(cfg))
-    for path in sorted((root / "data" / "chains").glob("*.parquet")):
+    pattern = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].parquet"
+    for path in sorted((root / "data" / "chains").glob(pattern)):
         session = dt.date.fromisoformat(path.stem)
         chain = pd.read_parquet(path)
         chain_iv, stats = compute_chain_iv(chain, r, q)

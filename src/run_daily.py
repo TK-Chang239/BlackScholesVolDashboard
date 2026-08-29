@@ -129,7 +129,7 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     summary = iv_rv_summary(series)
 
     figures = {
-        "P1": build_sensitivity_figure(sens),
+        "P1": build_sensitivity_figure(sens, cfg["sensitivity"]["bump"]),
         "P2": build_smile_figure(smile, spot),
         "P3": build_term_structure_figure(ts_today, ts_prev, previous_label=prev_label),
         "P4": build_greeks_curves_figure(curves, spot),
