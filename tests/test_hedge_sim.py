@@ -298,3 +298,122 @@ class TestSimulateTrade:
         # row-dict key were renamed -- that renamed column would just come back all-NaN.
         # Guard against that: every declared column must actually carry data every day.
         assert daily.notna().all().all()
+
+
+from src.analytics.hedge_sim import (
+    TRADE_COLUMNS, fit_pnl_vs_edge, hedge_summary, portfolio_daily, simulate,
+)
+
+
+class TestSimulate:
+    def _archive(self, months, closes_per_month=8):
+        """One entry per month; each trade's expiry is 5 sessions after entry."""
+        chains, closes, dates = {}, [], []
+        day = dt.date(2026, 6, 1)
+        for _ in range(months * closes_per_month):
+            dates.append(day)
+            closes.append(100.0)
+            day += dt.timedelta(days=4)      # ~4-day steps walk through several months
+        u = pd.DataFrame({"date": dates, "close": closes, "adjusted_close": closes,
+                          "volume": [1.0] * len(dates)})
+        for i, d in enumerate(dates):
+            expiry = dates[min(i + 5, len(dates) - 1)]
+            chains[d] = make_chain(d, 100.0, {expiry: 0.20})
+        return chains, u
+
+    def test_one_trade_per_month_with_declared_columns(self):
+        chains, u = self._archive(months=2)
+        trades, daily = simulate(chains, u, 0.04, 0.013, CFG)
+        assert list(trades.columns) == TRADE_COLUMNS
+        assert len(trades) == trades["entry_date"].nunique()
+        months = {(d.year, d.month) for d in trades["entry_date"]}
+        assert len(months) == len(trades)
+
+    def test_empty_archive_returns_empty_frames_with_columns(self):
+        from src.analytics.hedge_sim import DAILY_COLUMNS
+        u = pd.DataFrame({"date": [], "close": [], "adjusted_close": [], "volume": []})
+        trades, daily = simulate({}, u, 0.04, 0.013, CFG)
+        assert list(trades.columns) == TRADE_COLUMNS and trades.empty
+        assert list(daily.columns) == DAILY_COLUMNS and daily.empty
+
+
+class TestPortfolioDaily:
+    def test_sums_overlapping_trades_and_accumulates(self):
+        daily = pd.DataFrame({
+            "date": [dt.date(2026, 6, 1), dt.date(2026, 6, 2), dt.date(2026, 6, 2)],
+            "entry_date": [dt.date(2026, 6, 1), dt.date(2026, 6, 1), dt.date(2026, 6, 2)],
+            "pnl_day": [0.0, 1.5, 0.0],
+        })
+        port = portfolio_daily(daily)
+        assert list(port.columns) == ["date", "pnl_day", "pnl_cum", "n_open"]
+        assert port["pnl_day"].tolist() == [0.0, 1.5]
+        assert port["pnl_cum"].tolist() == [0.0, 1.5]
+        assert port["n_open"].tolist() == [1, 2]
+
+    def test_empty(self):
+        port = portfolio_daily(pd.DataFrame(columns=["date", "entry_date", "pnl_day"]))
+        assert port.empty and list(port.columns) == ["date", "pnl_day", "pnl_cum", "n_open"]
+
+
+class TestFit:
+    def test_recovers_a_known_line(self):
+        trades = pd.DataFrame({
+            "edge": [0.01, 0.02, 0.03, 0.04],           # 1..4 vol points
+            "pnl": [2.0, 4.0, 6.0, 8.0],                 # slope 2 $/vol point
+            "status": ["settled"] * 4,
+        })
+        fit = fit_pnl_vs_edge(trades)
+        assert fit["n"] == 4
+        assert fit["slope"] == pytest.approx(2.0)
+        assert fit["intercept"] == pytest.approx(0.0, abs=1e-9)
+        assert fit["r2"] == pytest.approx(1.0)
+
+    def test_ignores_open_and_sparse_trades(self):
+        trades = pd.DataFrame({
+            "edge": [0.01, 0.02, 0.03],
+            "pnl": [2.0, 4.0, 999.0],
+            "status": ["settled", "settled", "open"],
+        })
+        assert fit_pnl_vs_edge(trades)["n"] == 2
+
+    def test_fewer_than_two_points_gives_no_line(self):
+        trades = pd.DataFrame({"edge": [0.01], "pnl": [2.0], "status": ["settled"]})
+        fit = fit_pnl_vs_edge(trades)
+        assert fit["n"] == 1
+        assert np.isnan(fit["slope"]) and np.isnan(fit["r2"])
+
+    def test_nan_edge_is_dropped(self):
+        trades = pd.DataFrame({
+            "edge": [0.01, np.nan, 0.03], "pnl": [2.0, 4.0, 6.0],
+            "status": ["settled"] * 3,
+        })
+        assert fit_pnl_vs_edge(trades)["n"] == 2
+
+
+class TestHedgeSummary:
+    def test_counts_statuses_and_reports_the_next_settlement(self):
+        trades = pd.DataFrame({
+            "entry_date": [dt.date(2026, 6, 1), dt.date(2026, 7, 1)],
+            "expiry": [dt.date(2026, 7, 17), dt.date(2026, 8, 21)],
+            "exit_date": [dt.date(2026, 7, 17), dt.date(2026, 8, 12)],
+            "pnl": [1.0, -0.5], "edge": [0.01, 0.02],
+            "n_days": [30, 20], "n_market_marks": [27, 20], "n_model_marks": [3, 0],
+            "market_mark_share": [0.9, 1.0], "status": ["settled", "open"],
+        })
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1), dt.date(2026, 6, 2)],
+                             "pnl_day": [0.0, 1.0], "pnl_cum": [0.0, 1.0], "n_open": [1, 1]})
+        s = hedge_summary(trades, port, {"n": 1, "slope": np.nan,
+                                         "intercept": np.nan, "r2": np.nan})
+        assert (s["n_trades"], s["n_settled"], s["n_open"], s["n_sparse"]) == (2, 1, 1, 0)
+        assert s["next_settlement"] == dt.date(2026, 8, 21)
+        assert s["cum_pnl"] == pytest.approx(1.0)
+        assert s["first_entry"] == dt.date(2026, 6, 1)
+        assert s["market_mark_share"] == pytest.approx(47 / 50)
+
+    def test_empty_summary_is_all_zeros_and_nones(self):
+        s = hedge_summary(pd.DataFrame(columns=TRADE_COLUMNS),
+                          pd.DataFrame(columns=["date", "pnl_day", "pnl_cum", "n_open"]),
+                          {"n": 0, "slope": np.nan, "intercept": np.nan, "r2": np.nan})
+        assert s["n_trades"] == 0 and s["first_entry"] is None
+        assert s["next_settlement"] is None
+        assert np.isnan(s["cum_pnl"])

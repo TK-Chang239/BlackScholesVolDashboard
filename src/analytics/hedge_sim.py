@@ -204,3 +204,79 @@ def simulate_trade(entry_date: dt.date, sel: dict, chains: dict, underlying: pd.
         "edge": float(sel["iv"]) - lifetime_rv, "status": status,
     }
     return daily, trade
+
+
+def simulate(chains: dict, underlying: pd.DataFrame, r: float, q: float,
+             cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Replay every monthly trade the stored archive supports."""
+    trades, frames = [], []
+    for entry in entry_sessions(list(chains)):
+        sel = select_straddle(chains[entry], cfg)
+        if sel is None:
+            continue
+        daily, trade = simulate_trade(entry, sel, chains, underlying, r, q, cfg)
+        frames.append(daily)
+        trades.append(trade)
+    daily_all = (pd.concat(frames, ignore_index=True) if frames
+                 else pd.DataFrame(columns=DAILY_COLUMNS))
+    trades_df = pd.DataFrame(trades, columns=TRADE_COLUMNS)
+    return trades_df.sort_values("entry_date").reset_index(drop=True), daily_all
+
+
+def portfolio_daily(daily: pd.DataFrame) -> pd.DataFrame:
+    """Total P&L per calendar day across all live trades, and its running sum."""
+    cols = ["date", "pnl_day", "pnl_cum", "n_open"]
+    if daily.empty:
+        return pd.DataFrame(columns=cols)
+    g = (daily.groupby("date", as_index=False)
+         .agg(pnl_day=("pnl_day", "sum"), n_open=("entry_date", "nunique"))
+         .sort_values("date").reset_index(drop=True))
+    g["pnl_cum"] = g["pnl_day"].cumsum()
+    return g[cols]
+
+
+def fit_pnl_vs_edge(trades: pd.DataFrame) -> dict:
+    """Least-squares line through settled trades: P&L ($) vs edge (VOL POINTS)."""
+    out = {"n": 0, "slope": float("nan"), "intercept": float("nan"), "r2": float("nan")}
+    if trades.empty:
+        return out
+    s = trades[(trades["status"] == "settled") & trades["edge"].notna()
+               & trades["pnl"].notna()]
+    out["n"] = int(len(s))
+    if len(s) < 2:
+        return out
+    x = s["edge"].to_numpy(dtype=float) * 100.0
+    y = s["pnl"].to_numpy(dtype=float)
+    if np.ptp(x) == 0:            # a vertical cloud has no line through it
+        return out
+    slope, intercept = np.polyfit(x, y, 1)
+    resid = y - (slope * x + intercept)
+    ss_tot = float(((y - y.mean()) ** 2).sum())
+    out.update(slope=float(slope), intercept=float(intercept),
+               r2=(1.0 - float((resid ** 2).sum()) / ss_tot) if ss_tot > 0 else float("nan"))
+    return out
+
+
+def hedge_summary(trades: pd.DataFrame, port: pd.DataFrame, fit: dict) -> dict:
+    """Everything the page's stat line and status.json need, in one dict."""
+    counts = trades["status"].value_counts().to_dict() if not trades.empty else {}
+    open_trades = trades[trades["status"] == "open"] if not trades.empty else trades
+    marks = int(trades["n_days"].sum()) if not trades.empty else 0
+    return {
+        "n_trades": int(len(trades)),
+        "n_settled": int(counts.get("settled", 0)),
+        "n_open": int(counts.get("open", 0)),
+        "n_sparse": int(counts.get("sparse", 0)),
+        "first_entry": trades["entry_date"].min() if not trades.empty else None,
+        "last_mark": port["date"].max() if not port.empty else None,
+        "cum_pnl": float(port["pnl_cum"].iloc[-1]) if not port.empty else float("nan"),
+        "n_days": int(len(port)),
+        "mean_daily_pnl": (float(port["pnl_day"].iloc[1:].mean())
+                           if len(port) > 1 else float("nan")),
+        "sd_daily_pnl": (float(port["pnl_day"].iloc[1:].std(ddof=1))
+                         if len(port) > 2 else float("nan")),
+        "market_mark_share": (float(trades["n_market_marks"].sum() / marks)
+                              if marks else float("nan")),
+        "next_settlement": (open_trades["expiry"].min() if len(open_trades) else None),
+        "slope": fit["slope"], "r2": fit["r2"],
+    }
