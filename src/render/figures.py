@@ -82,15 +82,21 @@ def build_sensitivity_figure(sens: pd.DataFrame, bump: float) -> go.Figure:
         subplot_titles=("Inputs the market argues about", "Inputs everyone observes"))
     for col, group in ((1, "argued"), (2, "observed")):
         g = sens[sens["group"] == group].sort_values("span")   # biggest bar on top
-        for tag, color, name in (("down_pct", "#c44e52", f"input −{bump:.0%}"),
-                                 ("up_pct", "#4c72b0", f"input +{bump:.0%}")):
-            fig.add_trace(go.Bar(
+        # down bars label INSIDE (near the axis) so long negative bars (e.g. S at
+        # -100%) don't push an outside label left into the y-axis category labels;
+        # up bars stay OUTSIDE since they never crowd the axis.
+        for tag, color, name, textposition, insidetextanchor in (
+                ("down_pct", "#c44e52", f"input −{bump:.0%}", "inside", "start"),
+                ("up_pct", "#4c72b0", f"input +{bump:.0%}", "outside", None)):
+            bar_kwargs = dict(
                 y=g["label"], x=g[tag], orientation="h", name=name,
                 marker_color=color, showlegend=(col == 1),
-                text=g[tag], texttemplate="%{x:+.1%}", textposition="outside",
+                text=g[tag], texttemplate="%{x:+.1%}", textposition=textposition,
                 cliponaxis=False,
-                hovertemplate="%{y}: %{x:+.1%}<extra>" + name + "</extra>"),
-                row=1, col=col)
+                hovertemplate="%{y}: %{x:+.1%}<extra>" + name + "</extra>")
+            if insidetextanchor:
+                bar_kwargs["insidetextanchor"] = insidetextanchor
+            fig.add_trace(go.Bar(**bar_kwargs), row=1, col=col)
     fig.update_layout(title=title, barmode="overlay", **_LAYOUT)
     fig.update_xaxes(title_text="Price change", tickformat="+.0%")
     return fig
@@ -119,33 +125,56 @@ def build_greeks_curves_figure(curves: pd.DataFrame, spot: float) -> go.Figure:
     return fig
 
 
+def _break_gaps(series: pd.DataFrame, max_gap_days: int = 30) -> pd.DataFrame:
+    """Insert an all-NaN row between sessions more than `max_gap_days` apart.
+
+    Scatter traces default to connectgaps=False, so a NaN y-value stops both
+    the line and a `tonexty` fill; without this, a long silent stretch in the
+    stored history (e.g. a single depth-probe session two years before the
+    daily series starts) draws a straight diagonal segment -- and a huge
+    shaded wedge -- across the gap instead of leaving it visibly empty.
+    """
+    if len(series) < 2:
+        return series
+    dates = list(series["date"])
+    rows = [series.iloc[0].to_dict()]
+    for i in range(1, len(series)):
+        if (dates[i] - dates[i - 1]).days > max_gap_days:
+            gap_row = {col: float("nan") for col in series.columns}
+            gap_row["date"] = dates[i - 1] + timedelta(days=1)
+            rows.append(gap_row)
+        rows.append(series.iloc[i].to_dict())
+    return pd.DataFrame(rows, columns=series.columns)
+
+
 def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Figure:
     rv_cfg = cfg["realized_vol"]
     title = "Implied vs realized volatility — ~30-DTE ATM IV against what SPY actually did"
     if series.empty:
         return _empty_figure(title, "No sessions with a 30-DTE ATM implied vol yet")
+    plotted = _break_gaps(series)
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(
-        x=series["date"], y=series["rv_trailing"], mode="lines+markers",
-        name=f"Realized vol, trailing {rv_cfg['windows'][0]}d", line=dict(color="#55a868"),
+        x=plotted["date"], y=plotted["rv_trailing"], mode="lines+markers",
+        name=f"Realized, trailing {rv_cfg['windows'][0]}d", line=dict(color="#55a868"),
         marker=dict(size=4), hovertemplate="%{x}: %{y:.1%}<extra>trailing RV</extra>"))
     fig.add_trace(go.Scatter(
-        x=series["date"], y=series["atm_iv"], mode="lines+markers",
-        name="Implied vol, ~30-DTE ATM", line=dict(color="#4c72b0"), marker=dict(size=4),
+        x=plotted["date"], y=plotted["atm_iv"], mode="lines+markers",
+        name="Implied, ~30-DTE ATM", line=dict(color="#4c72b0"), marker=dict(size=4),
         fill="tonexty", fillcolor="rgba(76,114,176,0.12)",
         hovertemplate="%{x}: %{y:.1%}<extra>implied</extra>"))
     fig.add_trace(go.Scatter(
-        x=series["date"], y=series["fwd_rv"], mode="lines+markers",
-        name=f"Realized vol, forward {rv_cfg['forward_horizon_days']}d (plotted at quote date)",
+        x=plotted["date"], y=plotted["fwd_rv"], mode="lines+markers",
+        name=f"Realized, forward {rv_cfg['forward_horizon_days']}d (at quote date)",
         line=dict(color="#dd8452", dash="dash"), marker=dict(size=4), connectgaps=False,
         hovertemplate="%{x}: %{y:.1%}<extra>forward RV</extra>"))
     fig.add_trace(go.Scatter(
-        x=series["date"], y=series["spread_running_mean"], mode="lines",
-        name="Running mean of IV − trailing RV", line=dict(color="grey", dash="dot"),
+        x=plotted["date"], y=plotted["spread_running_mean"], mode="lines",
+        name="Mean spread (IV − RV)", line=dict(color="grey", dash="dot"),
         hovertemplate="%{x}: %{y:+.1%}<extra>mean spread</extra>"), secondary_y=True)
     since = summary["history_since"].isoformat() if summary["history_since"] else "n/a"
     fig.add_annotation(text=f"accumulating since {since} · {summary['n_sessions']} sessions",
-                       xref="paper", yref="paper", x=0.0, y=1.08, showarrow=False,
+                       xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
                        font=dict(size=11, color="#555"), xanchor="left")
     fig.update_layout(title=title, **_LAYOUT)
     fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", secondary_y=False)

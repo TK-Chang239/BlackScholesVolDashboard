@@ -217,6 +217,36 @@ class TestIvRvFigure:
         fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
         assert fig.layout.xaxis.range is None
 
+    def test_large_gap_breaks_line_and_fill(self):
+        import yaml
+        from src.analytics.iv_rv import iv_rv_summary
+        from src.render.figures import build_iv_rv_figure
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        dates = [dt.date(2024, 9, 3)] + \
+            [dt.date(2026, 8, 20) + dt.timedelta(days=i) for i in range(3)]
+        s = pd.DataFrame({"date": dates, "atm_iv": [0.16, 0.12, 0.13, 0.14],
+                          "rv_trailing": [0.11, 0.10, 0.10, 0.11],
+                          "fwd_rv": [0.11, np.nan, np.nan, np.nan],
+                          "spread": [0.05, 0.02, 0.03, 0.03],
+                          "spread_running_mean": [0.05, 0.035, 0.0333, 0.0325]})
+        fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
+        iv_trace = next(t for t in fig.data if "implied" in (t.name or "").lower())
+        ys = list(iv_trace.y)
+        assert any(y is None or (isinstance(y, float) and np.isnan(y)) for y in ys)
+
+    def test_contiguous_series_has_no_gap_break(self):
+        import yaml
+        from src.analytics.iv_rv import iv_rv_summary
+        from src.render.figures import build_iv_rv_figure
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        s = self._series()
+        fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
+        iv_trace = next(t for t in fig.data if "implied" in (t.name or "").lower())
+        ys = list(iv_trace.y)
+        assert not any(y is None or (isinstance(y, float) and np.isnan(y)) for y in ys)
+
 
 class TestPagePhase4:
     def _figs(self):
