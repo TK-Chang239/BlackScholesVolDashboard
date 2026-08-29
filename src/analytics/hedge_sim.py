@@ -153,8 +153,10 @@ def simulate_trade(entry_date: dt.date, sel: dict, chains: dict, underlying: pd.
         gap = (day - rows[-1]["date"]).days
         prev = rows[-1]
         new_spot = closes[day]
+        T = (expiry - day).days / 365.0   # single clock for both the mark and the hedge below
         if day == settle_date:
             new_value, source, new_shares = abs(new_spot - strike), "settlement", 0.0
+            n_market += 1     # settlement is a market fact, not a model mark
         else:
             quoted = _quote(chains.get(day), expiry, strike)
             if quoted is not None:
@@ -162,14 +164,12 @@ def simulate_trade(entry_date: dt.date, sel: dict, chains: dict, underlying: pd.
                 source = "market"
                 n_market += 1
             else:
-                T = (expiry - day).days / 365.0
                 new_value = float(
                     bs_price(new_spot, strike, T, r, call_iv, q, "call")
                     + bs_price(new_spot, strike, T, r, put_iv, q, "put"))
                 source = "model"
                 n_model += 1
-            new_shares = hedge_shares(new_spot, strike, (expiry - day).days / 365.0,
-                                      r, q, call_iv, put_iv)
+            new_shares = hedge_shares(new_spot, strike, T, r, q, call_iv, put_iv)
 
         interest = prev["cash"] * (np.exp(r * gap / 365.0) - 1.0)
         dividend = prev["hedge_shares"] * prev["spot"] * (np.exp(q * gap / 365.0) - 1.0)
@@ -186,8 +186,6 @@ def simulate_trade(entry_date: dt.date, sel: dict, chains: dict, underlying: pd.
             "pnl_option": option, "pnl_hedge": hedge, "pnl_interest": interest,
             "pnl_dividend": dividend, "pnl_cost": cost, "mark_source": source,
         })
-        if day == settle_date:
-            n_market += 1     # settlement is a market fact, not a model mark
 
     daily = pd.DataFrame(rows, columns=DAILY_COLUMNS)
     last = daily.iloc[-1]

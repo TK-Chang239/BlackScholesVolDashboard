@@ -182,6 +182,36 @@ class TestSimulateTrade:
         assert trade["pnl"] == pytest.approx(last["pv"])
         assert trade["exit_date"] == expiry
 
+    def test_settles_on_last_session_before_a_holiday_expiry_that_is_absent_from_the_calendar(self):
+        # `expiry` itself is never a stored session (a market holiday); the archive
+        # keeps trading sessions AFTER it. Settlement must still fall back to the
+        # last session at or before expiry, not stay "open" just because expiry
+        # itself never shows up as a key.
+        entry = dt.date(2026, 6, 1)
+        horizon = 30
+        expiry = entry + dt.timedelta(days=horizon)
+        settle_date = expiry - dt.timedelta(days=1)
+        pre = [entry + dt.timedelta(days=i) for i in range(horizon)]        # entry..settle_date
+        post = [expiry + dt.timedelta(days=i) for i in (1, 2)]              # continues PAST expiry
+        pre_closes = [100.0] * (horizon - 1) + [107.0]                      # settle_date moves ITM
+        post_closes = [107.0, 107.0]
+        u = pd.DataFrame({
+            "date": pre + post, "close": pre_closes + post_closes,
+            "adjusted_close": pre_closes + post_closes, "volume": [1.0] * (len(pre) + len(post)),
+        })
+        chains = {d: make_chain(d, c, {expiry: 0.20}, strikes=(95.0, 100.0, 105.0))
+                  for d, c in zip(pre, pre_closes)}
+        sel = select_straddle(chains[entry], CFG)
+        assert sel is not None
+        daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
+        last = daily.iloc[-1]
+        assert last["date"] == settle_date
+        assert last["mark_source"] == "settlement"
+        assert last["straddle"] == pytest.approx(abs(107.0 - sel["strike"]))
+        assert last["hedge_shares"] == pytest.approx(0.0)
+        assert trade["status"] == "settled"
+        assert trade["exit_date"] == settle_date
+
     def test_trade_is_open_when_underlying_stops_before_expiry(self):
         entry = dt.date(2026, 6, 1)
         expiry = entry + dt.timedelta(days=30)
@@ -203,6 +233,32 @@ class TestSimulateTrade:
         assert row["straddle"] > 0
         assert trade["n_model_marks"] == 1
         assert trade["n_market_marks"] == trade["n_days"] - 1
+
+    def test_chain_present_but_missing_the_quoted_pair_is_model_marked(self):
+        # Distinct from a wholly missing chain day: this chain day EXISTS in `chains`,
+        # but the ATM strike's call leg has a null iv, so `_quote`'s notna filter
+        # (not a missing key) is what forces the fallback to the model mark.
+        entry, expiry, sel, chains, u = self._setup([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+        d = entry + dt.timedelta(days=2)
+        c = chains[d].copy()
+        c.loc[(c["strike"] == sel["strike"]) & (c["kind"] == "call"), "iv"] = np.nan
+        chains[d] = c
+        daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
+        row = daily[daily["date"] == d].iloc[0]
+        assert row["mark_source"] == "model"
+        assert trade["n_model_marks"] == 1
+        assert trade["n_market_marks"] == trade["n_days"] - 1
+
+    def test_model_marked_row_carries_forward_the_prior_ivs(self):
+        entry, expiry, sel, chains, u = self._setup([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+        d = entry + dt.timedelta(days=2)
+        del chains[d]
+        daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
+        prev_row = daily[daily["date"] == d - dt.timedelta(days=1)].iloc[0]
+        row = daily[daily["date"] == d].iloc[0]
+        assert row["mark_source"] == "model"
+        assert row["call_iv"] == pytest.approx(prev_row["call_iv"])
+        assert row["put_iv"] == pytest.approx(prev_row["put_iv"])
 
     def test_mostly_model_marked_trade_is_reported_sparse(self):
         entry, expiry, sel, chains, u = self._setup([100.0] * 8, n_chain_days=2)
@@ -238,3 +294,7 @@ class TestSimulateTrade:
         entry, expiry, sel, chains, u = self._setup([100.0] * 5)
         daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
         assert list(daily.columns) == DAILY_COLUMNS
+        # `pd.DataFrame(rows, columns=DAILY_COLUMNS)` forces this column list even if a
+        # row-dict key were renamed -- that renamed column would just come back all-NaN.
+        # Guard against that: every declared column must actually carry data every day.
+        assert daily.notna().all().all()
