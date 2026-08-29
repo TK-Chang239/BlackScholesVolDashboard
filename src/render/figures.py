@@ -13,17 +13,13 @@ _LAYOUT = dict(
 
 
 def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
-    fig = go.Figure()
     if smile.empty:
-        fig.add_annotation(
-            text="No converged OTM quotes for this session",
-            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-            font=dict(size=16))
-        fig.update_layout(
+        return _empty_figure(
             title="Implied volatility smile — solved from market quotes",
+            message="No converged OTM quotes for this session",
             xaxis_title="Moneyness K/S", yaxis_title="Implied vol",
-            yaxis_tickformat=".0%", **_LAYOUT)
-        return fig
+            yaxis_tickformat=".0%")
+    fig = go.Figure()
     for (expiry, dte), g in smile.groupby(["expiry", "dte"], sort=True):
         g = g.sort_values("strike")
         fig.add_trace(go.Scatter(
@@ -65,11 +61,11 @@ def build_term_structure_figure(today: pd.DataFrame,
     return fig
 
 
-def _empty_figure(title: str, message: str) -> go.Figure:
+def _empty_figure(title: str, message: str, **layout) -> go.Figure:
     fig = go.Figure()
     fig.add_annotation(text=message, xref="paper", yref="paper", x=0.5, y=0.5,
                        showarrow=False, font=dict(size=16))
-    fig.update_layout(title=title, **_LAYOUT)
+    fig.update_layout(title=title, **layout, **_LAYOUT)
     return fig
 
 
