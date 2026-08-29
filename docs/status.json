@@ -1,5 +1,5 @@
 {
-  "last_success_utc": "2026-08-29T08:44:37+00:00",
+  "last_success_utc": "2026-08-29T18:58:54+00:00",
   "snapshot_date": "2026-08-28",
   "source": "yfinance",
   "rows_stored": 1452,
@@ -24,6 +24,24 @@
   "implied_carry_dte_max": 203,
   "implied_carry_expiries": 4,
   "implied_carry_statistic": "median implied carry over the 4 expiries with dte >= 84",
+  "hedge_trades": 3,
+  "hedge_trades_settled": 1,
+  "hedge_trades_reached_expiry": 2,
+  "hedge_trades_open": 1,
+  "hedge_trades_sparse": 1,
+  "hedge_months_skipped": 1,
+  "hedge_sessions": 37,
+  "hedge_dte_at_entry_min": 16,
+  "hedge_dte_at_entry_max": 35,
+  "hedge_cum_pnl": 10.4825,
+  "hedge_market_mark_share": 0.5294,
+  "hedge_quotable_mark_share": 0.6923,
+  "hedge_model_marks": 16,
+  "hedge_model_marks_structural": 8,
+  "hedge_model_marks_gap": 8,
+  "hedge_slope_per_vol_point": null,
+  "hedge_r2": null,
+  "hedge_next_settlement": "2026-09-18",
   "panels_rendered": [
     "P1",
     "P2",
@@ -32,6 +50,9 @@
     "P5",
     "P6",
     "P7",
+    "P8a",
+    "P8b",
+    "P8c",
     "P9"
   ]
 }
