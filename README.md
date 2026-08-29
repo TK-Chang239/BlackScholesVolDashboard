@@ -114,7 +114,7 @@ in [`SPEC.md`](SPEC.md).
 - [x] Phase 1 — Black-Scholes pricer + Greeks, fully unit-tested
 - [x] Phase 2 — data pipeline + history backfill
 - [x] Phase 3 — IV solver; smile + term-structure panels live on Pages
-- [ ] Phase 4 — implied-vs-realized, sensitivity, Greeks panels
+- [x] Phase 4 — implied-vs-realized, sensitivity, Greeks panels
 - [ ] Phase 5 — skew series + parity checker
 - [ ] Phase 6 — delta-hedged P&L simulation
 - [ ] Phase 7 — full daily automation, five unattended green runs
