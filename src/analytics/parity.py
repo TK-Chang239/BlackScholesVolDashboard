@@ -65,10 +65,15 @@ def compute_parity(chain_iv: pd.DataFrame, r: float, q: float) -> pd.DataFrame:
         return pd.DataFrame(columns=PARITY_COLUMNS)
     p["call_oi"] = pd.to_numeric(p["call_oi"], errors="coerce").astype(float)
     p["put_oi"] = pd.to_numeric(p["put_oi"], errors="coerce").astype(float)
-    # A pair is liquid when BOTH legs have open interest. A frame with no open
-    # interest at all (close-based backfill) would otherwise report zero liquid
-    # pairs, so in that case every pair counts as liquid.
-    oi_known = bool(p["call_oi"].notna().any() or p["put_oi"].notna().any())
+    # A pair is liquid when BOTH legs have open interest. A frame carrying NO
+    # POSITIVE open interest anywhere is not evidence that nothing trades -- it
+    # is the absence of the measurement, whether the column is missing (close-
+    # based backfill) or present and zero everywhere (a yfinance payload that
+    # dropped the field). Both must fall back to "every pair counts as liquid":
+    # taking a zero column at face value drives every liquidity-gated count to
+    # zero, which on an unattended cron publishes a comforting all-clear with no
+    # signal in it. Zeros on PART of a frame are real and still gate.
+    oi_known = bool((p[["call_oi", "put_oi"]] > 0).any().any())
     p["liquid"] = ((p["call_oi"] > 0) & (p["put_oi"] > 0)) if oi_known else True
     p["liquid"] = p["liquid"].astype(bool)
 
@@ -220,17 +225,42 @@ def carry_at_target(carry: pd.DataFrame, target_dte: int) -> tuple[float, float]
     return float(carry.loc[j, "implied_carry"]), float(carry.loc[j, "dte"])
 
 
-def carry_reference(carry: pd.DataFrame, min_dte: int = 84) -> tuple[float, float]:
-    """The carry to quote: the LONGEST expiry at or beyond `min_dte`.
+CARRY_REFERENCE_KEYS = ["implied_carry", "dte_min", "dte_max",
+                        "carry_lo", "carry_hi", "n_expiries"]
+
+
+def carry_reference(carry: pd.DataFrame, min_dte: int = 84) -> dict:
+    """The carry to quote: the MEDIAN over the expiries at or beyond `min_dte`,
+    with the range it hides.
 
     A fixed dollar error in the forward divides by T, so the shortest expiry
     is the least informative place to read carry -- a $1 miss at 21 days is
     over two percentage points of "rate", and nothing at all at six months.
-    Falls back to the longest expiry available when none qualify.
+    That is why short expiries are excluded. But the LONGEST single expiry is
+    not the answer either: it is one reading. On 2026-08-28 the 84-, 112- and
+    140-day expiries agreed within 3 bp of each other while the 203-day one sat
+    38 bp away -- and 203 is exactly what the "longest" rule published. The same
+    argument that made `_forward_table` a median over strikes makes this a
+    median over expiries.
+
+    The range travels with it: printing the median alone would flatter the
+    number by hiding the disagreement, which is the opposite of the point.
+
+    Falls back to the longest expiry available when none qualify (then the
+    median is that single reading and lo == hi). All-NaN on an empty frame or
+    when no qualifying expiry has a carry.
     """
+    empty = {"implied_carry": np.nan, "dte_min": np.nan, "dte_max": np.nan,
+             "carry_lo": np.nan, "carry_hi": np.nan, "n_expiries": 0}
     if carry.empty:
-        return (np.nan, np.nan)
+        return empty
     qualifying = carry[carry["dte"] >= min_dte]
-    src = qualifying if len(qualifying) else carry
-    j = int(src["dte"].idxmax())
-    return float(src.loc[j, "implied_carry"]), float(src.loc[j, "dte"])
+    src = qualifying if len(qualifying) else carry[carry["dte"] == carry["dte"].max()]
+    src = src[src["implied_carry"].notna()]
+    if src.empty:
+        return empty
+    vals = src["implied_carry"].astype(float)
+    return {"implied_carry": float(vals.median()),
+            "dte_min": float(src["dte"].min()), "dte_max": float(src["dte"].max()),
+            "carry_lo": float(vals.min()), "carry_hi": float(vals.max()),
+            "n_expiries": int(len(src))}

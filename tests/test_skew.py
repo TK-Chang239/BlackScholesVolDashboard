@@ -75,3 +75,40 @@ class TestSkew:
     def test_empty_chain(self):
         s = compute_skew_25d(make_chain().iloc[0:0], R, Q, cfg())
         assert s["skew_expiry"] is None and np.isnan(s["skew_25d"])
+
+
+class TestMaturityTolerance:
+    """The same bound `interp_atm_iv` applies (SPEC 3 P5/P6).
+
+    Without it one daily_metrics row can carry `atm_iv_30d = NaN` -- the ATM
+    reader correctly refusing a far expiry -- beside a `skew_25d` computed
+    from that very expiry, and the P6 series silently splices maturities.
+    The project's own measurement puts the maturity effect (OTM-put premium
+    +20.98 vol pts at 21d, +13.16 at 203d) on the same scale as the skew
+    signal being plotted (3.43-6.08).
+    """
+
+    def _at(self, dte):
+        return make_chain(expiries=((TODAY + dt.timedelta(days=dte), dte),))
+
+    def test_expiry_at_the_tolerance_is_used(self):
+        for dte in (20, 40):                    # |dte - 30| == ATM_NEAREST_TOLERANCE_DAYS
+            s = compute_skew_25d(self._at(dte), R, Q, cfg())
+            assert s["skew_dte"] == dte
+            assert not np.isnan(s["skew_25d"])
+
+    def test_expiry_beyond_the_tolerance_is_refused(self):
+        for dte in (19, 41):                    # |dte - 30| == 11
+            s = compute_skew_25d(self._at(dte), R, Q, cfg())
+            assert s["skew_expiry"] is None
+            assert np.isnan(s["skew_25d"]) and np.isnan(s["skew_dte"])
+
+    def test_tolerance_is_the_one_the_atm_reader_uses(self):
+        from src.analytics.daily_metrics import ATM_NEAREST_TOLERANCE_DAYS
+        assert ATM_NEAREST_TOLERANCE_DAYS == 10
+
+    def test_a_near_expiry_is_still_picked_over_a_far_one(self):
+        s = compute_skew_25d(make_chain(expiries=((dt.date(2026, 9, 25), 28),
+                                                  (dt.date(2027, 3, 19), 203))),
+                             R, Q, cfg())
+        assert s["skew_dte"] == 28

@@ -273,6 +273,7 @@ def _expiry_label(expiry, dte) -> str:
 
 def _muted_heatmap_layers(z_all, z_hot, xcats, y, colorbar_title: str, zmin: float, zmax: float,
                           hovertemplate: str, hot_name: str = "beyond spread",
+                          all_name: str = "within spread",
                           showscale: bool = True, **subplot) -> list[go.Heatmap]:
     """Two layers: every cell faint, then only the non-muted cells at full
     opacity with the colorbar — SPEC 3 P7/P9's 'within-spread region muted'.
@@ -282,11 +283,14 @@ def _muted_heatmap_layers(z_all, z_hot, xcats, y, colorbar_title: str, zmin: flo
     x-axis categories parameter. `showscale=False` keeps the trace (and so
     the trace count the P9 toggle's `visible` arrays depend on) while
     suppressing a second colorbar for a scale that is already shown.
+
+    `all_name` names the faint layer, which carries EVERY cell -- the hot ones
+    included -- so what it should be called depends on what the caller mutes.
     """
     common = dict(x=xcats, y=y, colorscale="RdBu", zmid=0, zmin=zmin, zmax=zmax,
                   hoverongaps=False, hovertemplate=hovertemplate)
     return [
-        go.Heatmap(z=z_all, opacity=0.3, showscale=False, name="within spread", **common),
+        go.Heatmap(z=z_all, opacity=0.3, showscale=False, name=all_name, **common),
         go.Heatmap(z=z_hot, opacity=1.0, showscale=showscale, name=hot_name,
                    colorbar=dict(title=colorbar_title, **subplot), **common),
     ]
@@ -306,8 +310,9 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
              if calibrated else raw_title)
     liquid = (p["liquid"].astype(bool) if "liquid" in p.columns
               else pd.Series(True, index=p.index))
-    # An in-the-money put gap inside the American early-exercise bound is not
-    # arbitrage, so it must not read as an alarm: it stays in the faint layer.
+    # An in-the-money put gap inside the American early-exercise bound is
+    # consistent with early exercise -- not proof of it, but enough that it must
+    # not read as an alarm: it stays in the faint layer.
     explained = (p["early_exercise_explained"].astype(bool)
                  if "early_exercise_explained" in p.columns
                  else pd.Series(False, index=p.index))
@@ -331,7 +336,7 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
             z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order, z_all.index.tolist(),
             ("C − P − e⁻ʳᵀ(F − K), $" if calibrated else "C − P − parity, $"), -lim, lim,
             "%{x}<br>K %{y}: %{z:+.2f} $<extra></extra>",
-            hot_name="unexplained"):
+            hot_name="unexplained", all_name="all pairs"):
         fig.add_trace(layer)
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=spot, y1=spot,
                   line=dict(color="grey", width=1, dash="dot"))
@@ -347,9 +352,8 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
     n_ee = int((explained & liquid).sum())
     if n_ee:
         fig.add_annotation(
-            text=(f"{n_ee} put-rich gap{'' if n_ee == 1 else 's'} within the American "
-                  f"early-exercise bound {'is' if n_ee == 1 else 'are'} shown muted "
-                  "— not arbitrage"),
+            text=(f"{n_ee} put-rich gap{'' if n_ee == 1 else 's'} shown muted "
+                  "— consistent with the American early-exercise bound"),
             **note)
     fig.update_layout(title=title, **_PARITY_LAYOUT)
     fig.update_xaxes(title_text="Expiry")
@@ -364,11 +368,19 @@ def build_model_vs_market_figure(mvm: pd.DataFrame, flat_vol: float) -> go.Figur
     title += f" ({flat_vol:.1%})"
     fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.14,
                         subplot_titles=("Calls", "Puts"))
-    metrics = [("deviation_pct", "% of market price", 1.0, "%{z:+.0%}"),
-               ("deviation_vol", "Vol points", 0.20, "%{z:+.1%}")]
-    for mi, (col, cb_title, lim, fmt) in enumerate(metrics):
+    # `deviation_vol` is a FRACTION of vol; a vol point is 1/100 of it. P6 one
+    # section above already multiplies by 100 and hovers "+4.0 vol pts", so
+    # plotting the fraction under a colorbar titled "Vol points" would have two
+    # panels of the same page disagreeing by 100x about what a vol point is.
+    # Scale here, in the figure, exactly as P6 does. `deviation_pct` is a
+    # fraction OF A PRICE and plotly's `%` format is the right reading of it,
+    # so it keeps scale 1.0.
+    metrics = [("deviation_pct", "% of market price", 1.0, 1.0, "%{z:+.0%}"),
+               ("deviation_vol", "Vol points", 100.0, 20.0, "%{z:+.1f} vol pts")]
+    for mi, (col, cb_title, scale, lim, fmt) in enumerate(metrics):
         for ci, kind in enumerate(("call", "put"), start=1):
             g = mvm[mvm["kind"] == kind].copy()
+            g[col] = g[col].astype(float) * scale
             g["label"] = [_expiry_label(e, d) for e, d in zip(g["expiry"], g["dte"])]
             order = g[["label", "dte"]].drop_duplicates().sort_values("dte")["label"].tolist()
             z_all = g.pivot(index="strike", columns="label", values=col).reindex(columns=order)

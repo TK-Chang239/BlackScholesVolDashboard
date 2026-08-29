@@ -5,10 +5,15 @@ put is "the put that pays off on a ~25%-probability down-move", which is
 the same contract regardless of spot level or vol regime. Deltas come
 from our own greeks() at each row's own market IV. skew = put − call;
 Black-Scholes says it should be zero.
+
+The expiry is the one nearest the ~30-day target, but only within the same
+`ATM_NEAREST_TOLERANCE_DAYS` the ATM IV beside it in daily_metrics uses:
+a skew read off a far expiry is a different quantity, not a noisier one.
 """
 import numpy as np
 import pandas as pd
 
+from src.analytics.daily_metrics import ATM_NEAREST_TOLERANCE_DAYS
 from src.models.black_scholes import greeks
 
 SKEW_KEYS = ["skew_expiry", "skew_dte", "put_iv_25d", "call_iv_25d", "skew_25d"]
@@ -37,6 +42,16 @@ def compute_skew_25d(chain_iv: pd.DataFrame, r: float, q: float, cfg: dict) -> d
     target_dte = int(cfg["target_dte"]["atm_panel"])
     available = solved[["expiry", "dte"]].drop_duplicates().reset_index(drop=True)
     pick = available.iloc[(available["dte"] - target_dte).abs().idxmin()]
+    # The same maturity bound `interp_atm_iv` applies to the ATM IV that sits
+    # beside this column in daily_metrics. Without it one row can carry
+    # atm_iv_30d = NaN -- the ATM reader correctly refusing a 90-day expiry --
+    # next to a skew computed from that very expiry, and the P6 series splices
+    # maturities silently. The maturity effect on this chain (OTM-put premium
+    # +20.98 vol pts at 21d against +13.16 at 203d) is the same size as the
+    # skew signal being plotted (3.43-6.08), so the splice is not a rounding
+    # error: it is the whole reading.
+    if abs(float(pick["dte"]) - target_dte) > ATM_NEAREST_TOLERANCE_DAYS:
+        return _empty()
     g = solved[solved["expiry"] == pick["expiry"]].copy()
     T = float(pick["dte"]) / 365.0
     g["delta"] = np.nan

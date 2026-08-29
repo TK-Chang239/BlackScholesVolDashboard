@@ -356,7 +356,11 @@ class TestPhase5Stage:
         assert status["parity_tradeable_violations_fwd"] == 0
         assert status["parity_violations_early_exercise"] == 0
         assert status["parity_violations_unexplained"] == 0
-        assert status["implied_carry"] is None and status["implied_carry_dte"] is None
+        assert status["implied_carry"] is None
+        assert status["implied_carry_dte_min"] is None
+        assert status["implied_carry_dte_max"] is None
+        assert status["implied_carry_expiries"] == 0
+        assert status["implied_carry_statistic"] is None
         assert status["skew_25d"] is None
         m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
         assert "skew_25d" in m.columns and np.isnan(m["skew_25d"].iloc[0])
@@ -394,12 +398,87 @@ class TestPhase5Stage:
         assert status["parity_violations_early_exercise"] == 0
         assert status["parity_violations_unexplained"] == 0
         assert status["implied_carry"] == pytest.approx(0.0415 - 0.0098, abs=1e-6)
-        assert status["implied_carry_dte"] == 28      # only expiry available, below min_dte
+        # only one expiry available and it is below min_dte -> the longest-expiry
+        # fallback, so the median is that single reading and the range is degenerate
+        assert status["implied_carry_dte_min"] == 28
+        assert status["implied_carry_dte_max"] == 28
+        assert status["implied_carry_expiries"] == 1
+        assert status["implied_carry_lo"] == status["implied_carry_hi"] == status["implied_carry"]
+        # status.json must say which statistic `implied_carry` is, not leave
+        # the reader to infer it from the keys around it
+        assert status["implied_carry_statistic"] == (
+            "implied carry at the longest available expiry (28d); no expiry reaches 84d")
         m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
         assert m["skew_25d_dte"].iloc[0] == 28
         page = (tmp_path / "docs" / "index.html").read_text()
         assert "0 tradeable violations" in page
         assert "Vol points" in page                          # P9 toggle rendered
+
+
+def wide_chain(spot, expiry, dte, source="yfinance"):
+    """A ladder that brackets spot on both sides, so P6 gets a real skew point."""
+    from src.models.black_scholes import bs_price
+    T = dte / 365.0
+    rows = []
+    for strike in [spot + d for d in range(-100, 101, 10)]:
+        for kind in ("call", "put"):
+            price = float(bs_price(spot, strike, T, 0.0415, 0.20, 0.0098, kind))
+            rows.append({"expiry": expiry, "strike": float(strike), "kind": kind,
+                         "bid": price - 0.05, "ask": price + 0.05, "mid": price,
+                         "close": price, "volume": 100, "open_interest": 500,
+                         "vendor_iv": 0.20, "source": source})
+    return pd.DataFrame(rows)
+
+
+class WideLive:
+    def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+        return wide_chain(spot, dt.date(2026, 9, 25), 28)
+
+
+class TestAnnotationResilience:
+    """A4: `data/annotations.yaml` is designed to be hand-edited ("adding a news
+    note is a 1-line commit"), so a typo in it is the EXPECTED failure -- and it
+    used to abort the run after the whole compute stage but before any write,
+    costing that session's chain, metrics row, page and status. A session's
+    quotes cannot be re-fetched later. Annotations are decoration."""
+
+    def _write(self, tmp_path, text):
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "data" / "annotations.yaml").write_text(text)
+
+    GOOD = "annotations:\n  - {date: 2026-08-28, note: FOMC statement}\n"
+    BAD = ("annotations:\n  - {date: 2026-08-28, note: FOMC statement}\n"
+           "  - {date: 2026-08-27}\n")          # no 'note': one hand-edit typo
+
+    def test_a_valid_annotation_reaches_the_page(self, tmp_path):
+        # the positive control for the test below: this note IS renderable
+        self._write(tmp_path, self.GOOD)
+        run(FakeEODHD(), WideLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert "FOMC statement" in (tmp_path / "docs" / "index.html").read_text()
+
+    def test_a_malformed_annotations_file_does_not_cost_the_session(self, tmp_path, capsys):
+        self._write(tmp_path, self.BAD)
+        status = run(FakeEODHD(), WideLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        # every write still happened
+        assert storage.chain_exists(TODAY, tmp_path)
+        assert storage.daily_metrics_path(tmp_path).exists()
+        assert (tmp_path / "docs" / "index.html").exists()
+        assert json.loads((tmp_path / "docs" / "status.json").read_text()) == status
+        # ...and P6 rendered, just without the notes
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "25-delta skew" in page
+        assert "FOMC statement" not in page
+        # the failure is not silent
+        err = capsys.readouterr().err
+        assert "annotations.yaml" in err
+
+    def test_load_annotations_itself_still_raises(self, tmp_path):
+        # strictness stays where it is useful: CI and test_shipped_file_loads
+        # must still catch a bad file that someone committed
+        from src.analytics.annotations import load_annotations
+        self._write(tmp_path, self.BAD)
+        with pytest.raises(ValueError):
+            load_annotations(tmp_path / "data" / "annotations.yaml")
 
 
 class TestDailyMetricsStage:

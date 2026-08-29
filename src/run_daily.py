@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from src.analytics.annotations import load_annotations
+from src.analytics.annotations import COLUMNS as ANNOTATION_COLUMNS, load_annotations
 from src.analytics.chain_iv import compute_chain_iv
 from src.analytics.daily_metrics import (
     metric_columns, refresh_rv_columns, session_metrics_row, upsert_session,
@@ -37,6 +37,31 @@ from src.render.stats import parity_summary_html
 from src.render.tiles import greek_tiles_html
 
 STALENESS_DAYS = 5
+CARRY_MIN_DTE = 84       # below this a dollar of forward error is a huge "rate" error
+
+
+def _carry_statistic(carry: dict) -> str | None:
+    """One sentence naming which statistic `implied_carry` is.
+
+    Without it `status.json` publishes a number and five keys around it and
+    leaves the reader to infer whether the middle one is a mean, a median or
+    a single reading.
+    """
+    if not carry["n_expiries"]:
+        return None
+    if carry["dte_min"] >= CARRY_MIN_DTE:
+        return (f"median implied carry over the {carry['n_expiries']} expiries "
+                f"with dte >= {CARRY_MIN_DTE}")
+    return (f"implied carry at the longest available expiry ({carry['dte_max']:.0f}d); "
+            f"no expiry reaches {CARRY_MIN_DTE}d")
+
+
+def _round_or_none(value: float, digits: int = 6) -> float | None:
+    return round(float(value), digits) if np.isfinite(value) else None
+
+
+def _int_or_none(value: float) -> int | None:
+    return int(value) if np.isfinite(value) else None
 
 
 def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = None) -> dict:
@@ -141,15 +166,29 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     # ---- P7 parity + implied carry ----
     parity = compute_parity(chain_iv, risk_free_rate, dividend_yield)
     psum = parity_summary(parity)
-    # Report carry from a long expiry: a fixed dollar of forward error divided
-    # by a three-week T looks like a huge rate error and says nothing.
+    # Report carry from the long expiries: a fixed dollar of forward error
+    # divided by a three-week T looks like a huge rate error and says nothing.
+    # And report their MEDIAN with its range, not the single longest reading.
     forwards = implied_forward(parity, spot, risk_free_rate)
-    carry_value, carry_dte = carry_reference(forwards, min_dte=84)
+    carry = carry_reference(forwards, min_dte=CARRY_MIN_DTE)
 
     # ---- P9 model vs market at the same flat vol P1 uses ----
     mvm = compute_model_vs_market(chain_iv, sigma_p1, risk_free_rate, dividend_yield)
 
-    annotations = load_annotations(Path(root) / "data" / "annotations.yaml")
+    # P6 annotations are decoration and the file is designed to be hand-edited
+    # ("adding a news note is a 1-line commit"), so a typo in it is the EXPECTED
+    # failure -- and this call sits after the whole compute stage but before any
+    # write. Letting it raise costs the session's chain parquet, metrics row,
+    # page and status for a missing colon, and a session's quotes cannot be
+    # re-fetched later. `load_annotations` keeps raising, so CI and
+    # `test_shipped_file_loads` still catch a bad file that was committed.
+    annotations_path = Path(root) / "data" / "annotations.yaml"
+    try:
+        annotations = load_annotations(annotations_path)
+    except Exception as ann_err:
+        print(f"annotations file {annotations_path} failed to load ({ann_err!r}); "
+              "rendering P6 without notes", file=sys.stderr)
+        annotations = pd.DataFrame(columns=ANNOTATION_COLUMNS)
 
     figures = {
         "P1": build_sensitivity_figure(sens, cfg["sensitivity"]["bump"]),
@@ -163,8 +202,7 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     }
     extras = {"P4": greek_tiles_html(tiles, tiles_prev, prev_label),
               "P5": iv_rv_summary_html(summary),
-              "P7": parity_summary_html(psum, carry_value, carry_dte,
-                                        risk_free_rate, dividend_yield)}
+              "P7": parity_summary_html(psum, carry, risk_free_rate, dividend_yield)}
 
     status = {
         "last_success_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -186,8 +224,17 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "parity_tradeable_violations_fwd": psum["n_tradeable_violations_fwd"],
         "parity_violations_early_exercise": psum["n_violations_early_exercise"],
         "parity_violations_unexplained": psum["n_violations_unexplained"],
-        "implied_carry": round(carry_value, 6) if np.isfinite(carry_value) else None,
-        "implied_carry_dte": int(carry_dte) if np.isfinite(carry_dte) else None,
+        # `implied_carry` is the MEDIAN over the expiries at or beyond 84 DTE;
+        # the four keys beside it say which expiries and how far apart they were,
+        # so the file describes its own summary statistic rather than presenting
+        # one reading as the answer.
+        "implied_carry": _round_or_none(carry["implied_carry"]),
+        "implied_carry_lo": _round_or_none(carry["carry_lo"]),
+        "implied_carry_hi": _round_or_none(carry["carry_hi"]),
+        "implied_carry_dte_min": _int_or_none(carry["dte_min"]),
+        "implied_carry_dte_max": _int_or_none(carry["dte_max"]),
+        "implied_carry_expiries": int(carry["n_expiries"]),
+        "implied_carry_statistic": _carry_statistic(carry),
         "panels_rendered": sorted(figures),
     }
     html = render_page(figures, status, extras=extras)

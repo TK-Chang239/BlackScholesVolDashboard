@@ -154,18 +154,64 @@ class TestForwardCalibration:
 
     def test_carry_reference_prefers_a_long_expiry(self):
         f = implied_forward(compute_parity(make_chain(), R, Q), SPOT, R)
-        val, dte = carry_reference(f, min_dte=84)
-        assert dte == 84 and val == pytest.approx(R - Q, abs=1e-8)
-        val2, dte2 = carry_reference(f, min_dte=999)       # nothing qualifies -> longest
-        assert dte2 == 84
-        assert val2 == pytest.approx(R - Q, abs=1e-8)
+        ref = carry_reference(f, min_dte=84)
+        assert ref["dte_min"] == ref["dte_max"] == 84
+        assert ref["implied_carry"] == pytest.approx(R - Q, abs=1e-8)
+        ref2 = carry_reference(f, min_dte=999)             # nothing qualifies -> longest
+        assert ref2["dte_max"] == 84
+        assert ref2["implied_carry"] == pytest.approx(R - Q, abs=1e-8)
 
     def test_unbracketed_expiry_has_no_forward(self):
         p = compute_parity(make_chain(strikes=(800.0, 840.0)), R, Q)
         assert p["forward"].isna().all() and p["deviation_fwd"].isna().all()
         assert not p["tradeable_violation_fwd"].any()
         assert implied_forward(p, SPOT, R).empty
-        assert np.isnan(carry_reference(implied_forward(p, SPOT, R))[0])
+        assert np.isnan(carry_reference(implied_forward(p, SPOT, R))["implied_carry"])
+
+
+class TestCarryReference:
+    """The published carry is a median over the long expiries, with its range.
+
+    Reading it off the single longest expiry publishes the one number that
+    disagrees most: on 2026-08-28 the 84/112/140-day expiries agreed within
+    3 bp and the 203-day one was 38 bp away -- and 203 was what the page
+    printed. Same argument that made the forward a median over strikes.
+    """
+
+    def _carry(self, rows):
+        return pd.DataFrame(
+            [{"expiry": dt.date(2026, 8, 28) + dt.timedelta(days=d), "dte": d,
+              "forward": SPOT, "implied_carry": c, "n_forward_strikes": 6}
+             for d, c in rows])
+
+    def test_median_and_range_over_the_qualifying_expiries(self):
+        ref = carry_reference(self._carry([(21, 0.00653), (49, 0.01780), (84, 0.02827),
+                                           (112, 0.02870), (140, 0.02858), (203, 0.03232)]),
+                              min_dte=84)
+        assert ref["implied_carry"] == pytest.approx(0.02864)   # median of the four
+        assert (ref["dte_min"], ref["dte_max"]) == (84.0, 203.0)
+        assert ref["carry_lo"] == pytest.approx(0.02827)
+        assert ref["carry_hi"] == pytest.approx(0.03232)
+        assert ref["n_expiries"] == 4
+        # the worst single reading is no longer the published number
+        assert ref["implied_carry"] != pytest.approx(0.03232)
+
+    def test_falls_back_to_the_longest_expiry_when_none_qualify(self):
+        ref = carry_reference(self._carry([(21, 0.00653), (49, 0.01780)]), min_dte=84)
+        assert ref["implied_carry"] == pytest.approx(0.01780)
+        assert ref["dte_min"] == ref["dte_max"] == 49.0
+        assert ref["carry_lo"] == ref["carry_hi"] == pytest.approx(0.01780)
+        assert ref["n_expiries"] == 1
+
+    def test_empty_frame_is_all_nan(self):
+        ref = carry_reference(pd.DataFrame(columns=["expiry", "dte", "forward",
+                                                    "implied_carry", "n_forward_strikes"]))
+        assert np.isnan(ref["implied_carry"]) and np.isnan(ref["dte_min"])
+        assert np.isnan(ref["dte_max"]) and ref["n_expiries"] == 0
+
+    def test_all_nan_carries_are_all_nan(self):
+        ref = carry_reference(self._carry([(84, np.nan), (203, np.nan)]), min_dte=84)
+        assert np.isnan(ref["implied_carry"]) and ref["n_expiries"] == 0
 
 
 class TestRobustForward:
@@ -237,6 +283,32 @@ class TestLiquidity:
         chain["open_interest"] = np.nan
         p = compute_parity(chain, R, Q)
         assert p["liquid"].all()
+
+    def test_all_zero_open_interest_is_treated_as_unknown(self):
+        # A payload whose open_interest column is present but zero everywhere is
+        # the same non-information as no column at all -- yfinance has shipped
+        # exactly that. Taken at face value it makes every liquidity-gated count
+        # read zero, i.e. a silent all-clear on an unattended run.
+        chain = make_chain()
+        chain["open_interest"] = 0.0
+        chain.loc[(chain["kind"] == "put") & (chain["strike"] == 800.0)
+                  & (chain["dte"] == 28), "price_used"] += 5.0
+        p = compute_parity(chain, R, Q)
+        assert p["liquid"].all()
+        s = parity_summary(p)
+        assert s["n_liquid"] == s["n_pairs"] == 12
+        assert s["n_tradeable_violations_fwd"] == 1
+        assert s["n_violations_unexplained"] == 1
+
+    def test_partial_open_interest_still_gates_on_it(self):
+        # The guard is "no positive open interest anywhere", not "some zeros":
+        # a frame where only part of the ladder carries OI must still gate.
+        chain = make_chain()
+        chain["open_interest"] = 0.0
+        chain.loc[chain["strike"].isin([760.0, 780.0]), "open_interest"] = 100.0
+        p = compute_parity(chain, R, Q)
+        assert set(p[p["liquid"]]["strike"]) == {760.0, 780.0}
+        assert parity_summary(p)["n_liquid"] == 4
 
     def test_summary_counts_liquid_and_both_violation_kinds(self):
         chain = make_chain()

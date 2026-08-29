@@ -316,6 +316,16 @@ class TestPagePhase4:
         # and the calibration's own blind spot is disclosed
         assert "level error" in cap
 
+    def test_p7_caption_calls_the_muting_consistency_not_proof(self):
+        from src.render.page import CAPTIONS
+        cap = CAPTIONS["P7"]
+        # a gap inside the bound is CONSISTENT WITH early exercise; a stale mark
+        # of the same size fits the bound just as well and is not arbitrage either
+        assert "consistent with early exercise" in cap
+        assert "not proof" in cap
+        assert "stale mark" in cap
+        assert "are still not arbitrage" not in cap
+
 
 class TestSkewFigure:
     def _metrics(self, dates, skews):
@@ -379,6 +389,10 @@ class TestParityFigure:
         assert faint.opacity == 0.3 and faint.showscale is False and hot.showscale is True
         # the hot layer is liquid AND beyond spread AND unaccounted for
         assert hot.name == "unexplained"
+        # ...and the faint layer carries EVERY cell -- within-spread, illiquid,
+        # early-exercise-explained and the hot ones -- so it cannot be called
+        # "within spread"
+        assert faint.name == "all pairs"
         hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
         assert hot_vals == pytest.approx([0.9, 0.9])
         assert list(faint.x) == ["2026-09-25 (28d)", "2026-11-20 (84d)"]
@@ -437,6 +451,11 @@ class TestParityFigure:
         assert hot_vals == pytest.approx([0.9])          # only the unexplained one stays hot
         assert any("early-exercise bound" in (a.text or "") for a in fig.layout.annotations)
         assert any("1 put-rich gap" in (a.text or "") for a in fig.layout.annotations)
+        # the bound says the gap is CONSISTENT WITH early exercise, not that it
+        # is early exercise -- a stale mark inside the bound is not arbitrage either
+        note = [a.text for a in fig.layout.annotations if "early-exercise" in (a.text or "")][0]
+        assert "consistent with the American early-exercise bound" in note
+        assert "not arbitrage" not in note
 
     def test_early_exercise_annotation_sits_above_the_plot_area(self):
         from src.render.figures import build_parity_figure
@@ -532,6 +551,38 @@ class TestModelVsMarketFigure:
         assert list(buttons[0].args[0]["visible"]) == [True] * 4 + [False] * 4
         assert list(buttons[1].args[0]["visible"]) == [False] * 4 + [True] * 4
 
+    def test_vol_point_layer_is_plotted_in_vol_points(self):
+        # `deviation_vol` is a FRACTION. P6 one section above multiplies it by 100
+        # and hovers "+4.0 vol pts"; this panel must mean the same thing by a vol
+        # point, and its colorbar says "Vol points" -- so the z values, the scale
+        # and the hover all have to be in vol points too.
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(self._mvm(), 0.12)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        vol_faint, vol_hot = heat[4], heat[5]        # calls, vol-point metric
+        vals = sorted(v for row in vol_faint.z for v in row if v is not None and v == v)
+        assert vals == pytest.approx([0.2, 5.0])     # 0.002 and 0.05 as vol points
+        hot_vals = [v for row in vol_hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([5.0])
+        assert (vol_faint.zmin, vol_faint.zmax) == (-20, 20)
+        assert "%{z:+.1f} vol pts" in vol_hot.hovertemplate
+        assert "%{z:+.1%}" not in vol_hot.hovertemplate
+        assert heat[7].colorbar.title.text == "Vol points"
+        # ...and the toggle still swaps exactly four visible traces for four
+        assert len(heat) == 8
+        assert [t.visible for t in heat] == [True] * 4 + [False] * 4
+        buttons = fig.layout.updatemenus[0].buttons
+        assert list(buttons[1].args[0]["visible"]) == [False] * 4 + [True] * 4
+
+    def test_percent_metric_is_untouched_by_the_vol_point_scaling(self):
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(self._mvm(), 0.12)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        vals = sorted(v for row in heat[0].z for v in row if v is not None and v == v)
+        assert vals == pytest.approx([0.02, 0.35])   # still fractions of market price
+        assert (heat[0].zmin, heat[0].zmax) == (-1.0, 1.0)
+        assert "%{z:+.0%}" in heat[1].hovertemplate
+
     def test_empty(self):
         from src.analytics.model_vs_market import MVM_COLUMNS
         from src.render.figures import build_model_vs_market_figure
@@ -549,25 +600,51 @@ class TestParityStat:
         s.update(over)
         return s
 
+    def _carry(self, **over):
+        c = {"implied_carry": 0.02864, "dte_min": 84.0, "dte_max": 203.0,
+             "carry_lo": 0.02827, "carry_hi": 0.03232, "n_expiries": 4}
+        c.update(over)
+        return c
+
+    def _one_expiry_carry(self, value=0.0281, dte=84.0):
+        return {"implied_carry": value, "dte_min": dte, "dte_max": dte,
+                "carry_lo": value, "carry_hi": value, "n_expiries": 1}
+
+    def _no_carry(self):
+        return {"implied_carry": float("nan"), "dte_min": float("nan"),
+                "dte_max": float("nan"), "carry_lo": float("nan"),
+                "carry_hi": float("nan"), "n_expiries": 0}
+
     def test_quoted_sentence_leads_with_the_unexplained_count(self):
         from src.render.stats import parity_summary_html
-        html = parity_summary_html(self._summary(), 0.0281, 84.0, 0.0383, 0.0098)
+        html = parity_summary_html(self._summary(), self._one_expiry_carry(), 0.0383, 0.0098)
         assert "400 liquid" in html
         assert "1 unexplained tradeable violation" in html
         assert "2 more put-rich gaps" in html and "early-exercise bound" in html
         assert "not arbitrage" in html
-        assert "in-the-money" not in html          # only 38 of the 40 really are
+        assert "in-the-money" not in html          # the ITM gate makes the count exact,
+                                                   # but the page still need not claim it
         # the calibrated total and the raw spot-based number stay visible
         assert "3 tradeable violations" in html
         assert "99.3%" in html and "forward is calibrated" in html
         assert "132" in html and "420" in html
         assert "2.81%" in html and "2.85%" in html and "84-day" in html
 
+    def test_lead_publishes_the_unexplained_share_of_liquid_pairs(self):
+        # the reader should not have to divide 4 by 400 themselves
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._summary(n_violations_unexplained=4),
+                                   self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "4 unexplained tradeable violations (1.0% of liquid pairs)" in html
+        html2 = parity_summary_html(self._summary(n_liquid=200, n_violations_unexplained=1),
+                                    self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "1 unexplained tradeable violation (0.5% of liquid pairs)" in html2
+
     def test_no_early_exercise_clause_when_none_are_explained(self):
         from src.render.stats import parity_summary_html
         html = parity_summary_html(
             self._summary(n_violations_early_exercise=0, n_violations_unexplained=3),
-            0.0281, 84.0, 0.0383, 0.0098)
+            self._one_expiry_carry(), 0.0383, 0.0098)
         assert "3 unexplained tradeable violations" in html
         assert "early-exercise" not in html and "0 more" not in html
 
@@ -576,10 +653,28 @@ class TestParityStat:
         html = parity_summary_html(
             self._summary(n_tradeable_violations_fwd=1, n_tradeable_violations=1,
                           n_violations_early_exercise=0, n_violations_unexplained=1,
-                          n_liquid=0, share_within_spread_fwd=float("nan")),
-            float("nan"), float("nan"), 0.0383, 0.0098)
+                          n_liquid=1, share_within_spread_fwd=float("nan")),
+            self._no_carry(), 0.0383, 0.0098)
         assert "1 tradeable violation " in html and "nan" not in html.lower()
         assert "carry" not in html.lower()
+
+    def test_no_liquid_pairs_refuses_to_publish_a_zero_all_clear(self):
+        # A1: with no open interest anywhere on the frame, every liquidity-gated
+        # count is zero by construction. Printing them is a false all-clear.
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(
+            self._summary(n_liquid=0, n_tradeable_violations_fwd=0,
+                          n_violations_early_exercise=0, n_violations_unexplained=0,
+                          share_within_spread_fwd=float("nan")),
+            self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "0 liquid" not in html and "0 unexplained" not in html
+        assert "0 tradeable violations" not in html
+        assert "open interest" in html
+        assert "liquidity could not be assessed" in html
+        # the spot-derived comparison is not liquidity-gated, so it survives
+        assert "132 of 420 quoted pairs exceed the spread" in html
+        assert "2.81%" in html                     # and so does the carry
+        assert "nan" not in html.lower()
 
     def _close_based(self, **over):
         s = self._summary(n_quoted=0, n_tradeable_violations=0, n_tradeable_violations_fwd=0,
@@ -593,8 +688,7 @@ class TestParityStat:
         # `build_parity_figure` titles a close-based frame "against the market's
         # own implied forward" too, so the stat line must not say "raw".
         from src.render.stats import parity_summary_html
-        html = parity_summary_html(self._close_based(), float("nan"), float("nan"),
-                                   0.0383, 0.0098)
+        html = parity_summary_html(self._close_based(), self._no_carry(), 0.0383, 0.0098)
         assert "spreads unknown, so tradeability cannot be assessed" in html
         assert "market-implied forward" in html
         assert "raw deviations only" not in html
@@ -603,26 +697,43 @@ class TestParityStat:
     def test_close_based_without_a_calibrated_forward_says_raw(self):
         from src.render.stats import parity_summary_html
         html = parity_summary_html(self._close_based(max_abs_deviation_fwd=float("nan")),
-                                   float("nan"), float("nan"), 0.0383, 0.0098)
+                                   self._no_carry(), 0.0383, 0.0098)
         assert "raw deviations only" in html and "nan" not in html.lower()
 
     def test_stale_spot_claim_only_when_the_calibration_removed_most_of_them(self):
         from src.render.stats import parity_summary_html
         # 132 -> 3 is a collapse, and the causal story is earned
         assert "stale-spot artefact" in parity_summary_html(
-            self._summary(), 0.0281, 84.0, 0.0383, 0.0098)
+            self._summary(), self._one_expiry_carry(), 0.0383, 0.0098)
         # 132 -> 100 is not
         html = parity_summary_html(self._summary(n_tradeable_violations_fwd=100),
-                                   0.0281, 84.0, 0.0383, 0.0098)
+                                   self._one_expiry_carry(), 0.0383, 0.0098)
         assert "stale-spot" not in html and "fifteen minutes" not in html
         assert "132 of 420 quoted pairs exceed the spread" in html
         # and neither is a handful of raw violations
         html = parity_summary_html(self._summary(n_tradeable_violations=4),
-                                   0.0281, 84.0, 0.0383, 0.0098)
+                                   self._one_expiry_carry(), 0.0383, 0.0098)
         assert "stale-spot" not in html
         assert "4 of 420 quoted pairs exceed the spread" in html
+
+    def test_carry_sentence_prints_the_median_the_range_and_the_span(self):
+        # A3: showing the whole set is what makes this honest rather than
+        # flattering -- the median alone would hide a 40 bp disagreement.
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._summary(), self._carry(), 0.0383, 0.0098)
+        assert "ATM implied carry across the 84\u2013203-day expiries" in html
+        assert "median 2.86%" in html
+        assert "range 2.83\u20133.23%" in html
+        assert "vs our r \u2212 q = 2.85%" in html
+
+    def test_carry_sentence_names_the_expiry_when_only_one_qualifies(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._summary(),
+                                   self._one_expiry_carry(0.0281, 28.0), 0.0383, 0.0098)
+        assert "ATM implied carry at the 28-day expiry: 2.81%" in html
+        assert "range" not in html and "median" not in html
 
     def test_no_pairs(self):
         from src.render.stats import parity_summary_html
         s = self._summary(n_pairs=0, n_quoted=0, n_liquid=0)
-        assert "No strike" in parity_summary_html(s, float("nan"), float("nan"), 0.04, 0.01)
+        assert "No strike" in parity_summary_html(s, self._no_carry(), 0.04, 0.01)
