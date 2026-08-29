@@ -1,6 +1,7 @@
 """Render layer: figures carry the right traces; page is self-contained."""
 import datetime as dt
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -150,3 +151,78 @@ class TestGreeksCurvesFigure:
         fig = build_greeks_curves_figure(curves, 770.0)
         scatters = [t for t in fig.data if t.type == "scatter" and t.name in ("call", "put")]
         assert len(scatters) == 4 and {t.xaxis for t in scatters} == {"x", "x2"}
+
+
+class TestIvRvFigure:
+    def _series(self):
+        import datetime as dt
+        d = [dt.date(2026, 8, 20) + dt.timedelta(days=i) for i in range(3)]
+        return pd.DataFrame({"date": d, "atm_iv": [0.12, 0.13, 0.14],
+                             "rv_trailing": [0.10, 0.10, 0.11], "fwd_rv": [0.11, np.nan, np.nan],
+                             "spread": [0.02, 0.03, 0.03],
+                             "spread_running_mean": [0.02, 0.025, 0.0267]})
+
+    def test_traces_and_since_annotation(self):
+        import yaml
+        from src.analytics.iv_rv import iv_rv_summary
+        from src.render.figures import build_iv_rv_figure
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        s = self._series()
+        fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
+        names = [t.name for t in fig.data]
+        assert any("implied" in n.lower() for n in names)
+        assert any("trailing" in n.lower() for n in names)
+        assert any("forward" in n.lower() for n in names)
+        assert any(t.fill == "tonexty" for t in fig.data)
+        assert any("2026-08-20" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_empty_series(self):
+        import yaml
+        from src.analytics.iv_rv import IV_RV_COLUMNS, iv_rv_summary
+        from src.render.figures import build_iv_rv_figure
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        s = pd.DataFrame(columns=IV_RV_COLUMNS)
+        fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
+        assert not fig.data and fig.layout.annotations
+
+
+class TestPagePhase4:
+    def _figs(self):
+        import plotly.graph_objects as go
+        return {p: go.Figure() for p in ("P1", "P2", "P3", "P4", "P5")}
+
+    def _status(self):
+        return {"spot": 771.1, "snapshot_date": "2026-08-27", "source": "yfinance",
+                "iv_convergence": 0.99, "last_success_utc": "2026-08-28T14:38:34+00:00",
+                "rows_stored": 1459}
+
+    def test_q1_and_q3_render_panels_not_placeholders(self):
+        from src.render.page import render_page
+        html = render_page(self._figs(), self._status())
+        assert "Input-sensitivity panel arrives" not in html
+        assert "Implied-vs-realized panel arrives" not in html
+        q1 = html.index("Q1."); q2 = html.index("Q2."); q3 = html.index("Q3.")
+        q4 = html.index("<h2>Q4.")  # plain "Q4." also matches inside P4's verbatim caption text
+        assert q1 < html.index("Input sensitivity") < q2
+        assert q3 < html.index("Implied vs realized") < q4
+
+    def test_extras_are_inserted_under_their_panel(self):
+        from src.render.page import render_page
+        html = render_page(self._figs(), self._status(),
+                           extras={"P4": "<div class='tiles'>TILES-HERE</div>",
+                                   "P5": "<p class='stat'>STAT-HERE</p>"})
+        assert html.index("Greeks") < html.index("TILES-HERE")
+        assert html.index("Implied vs realized") < html.index("STAT-HERE")
+
+    def test_footer_links_repo(self):
+        from src.render.page import render_page
+        assert "https://github.com/TK-Chang239/BlackScholesVolDashboard" in \
+            render_page(self._figs(), self._status())
+
+    def test_every_rendered_panel_has_a_caption(self):
+        from src.render.page import CAPTIONS, render_page
+        html = render_page(self._figs(), self._status())
+        for pid in ("P1", "P2", "P3", "P4", "P5"):
+            assert CAPTIONS[pid] in html

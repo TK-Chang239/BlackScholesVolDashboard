@@ -9,6 +9,8 @@ from pathlib import Path
 
 import plotly.io as pio
 
+from src.render.tiles import TILES_CSS
+
 _BUNDLE = Path(__file__).parent / "assets" / "plotly-cartesian-2.35.2.min.js"
 
 
@@ -20,6 +22,14 @@ def _fmt_pct(val) -> str:
 
 
 CAPTIONS = {
+    "P1": (
+        "Five inputs, one formula. Bumping each by ±20% shows that among the "
+        "inputs a trader must estimate, volatility is the only one worth arguing "
+        "about — the rate and dividend bars barely register. Spot and time are "
+        "shown separately because nobody disagrees about them: a 20% move in "
+        "spot is a crash, not a difference of opinion. This is why option desks "
+        "quote volatility, not price."
+    ),
     "P2": (
         "Black-Scholes assumes one volatility should price every strike. The "
         "market disagrees: implied vol rises steadily for lower strikes — the "
@@ -34,22 +44,46 @@ CAPTIONS = {
         "Fed meetings. When a previous session is stored, its curve appears "
         "in grey — labeled with its date — showing the day-over-day shift."
     ),
+    "P4": (
+        "The Greeks are the model's partial derivatives — how the price responds "
+        "to spot (delta), how delta itself responds (gamma), and how the price "
+        "bleeds with time (theta) or breathes with volatility (vega). Each tile "
+        "is computed by this project's own closed-form code for the at-the-money "
+        "~30-day option; the curves evaluate every strike at its own market "
+        "implied vol, which is what a hedging desk actually uses. Gamma peaking "
+        "at the money is the engine behind the hedged-P&L story in Q4."
+    ),
+    "P5": (
+        "Implied vol is the market's price for the next month of movement; "
+        "realized vol is what actually happened. The shaded gap is implied minus "
+        "trailing realized — the live view — but the honest scorecard is the "
+        "dashed forward series: the vol that subsequently occurred after each "
+        "quote. When implied sits persistently above forward realized, option "
+        "sellers are being paid a premium for bearing variance risk; that "
+        "premium, not forecasting skill, is what the gap usually measures."
+    ),
 }
 
 QUESTIONS = [
     ("Q1", "Everyone has the same formula. Why does anyone disagree about prices?",
-     [], "Input-sensitivity panel arrives in Phase 4."),
+     ["P1", "P4"], ""),
     ("Q2", "Where does the market ignore the model, and why?",
      ["P2", "P3"], "Model-vs-market heatmap arrives in Phase 5."),
     ("Q3", "Is implied volatility a prediction, or a price?",
-     [], "Implied-vs-realized panel arrives in Phase 4."),
+     ["P5"], ""),
     ("Q4", "The model claims you can hedge an option perfectly. Can you?",
      [], "Delta-hedged P&L simulation arrives in Phase 6."),
     ("Q5", "Given all these flaws, why does every desk still use Black-Scholes?",
      [], "Put-call parity checker arrives in Phase 5."),
 ]
 
-_PANEL_TITLES = {"P2": "IV smile / skew by expiry", "P3": "ATM IV term structure"}
+_PANEL_TITLES = {
+    "P1": "Input sensitivity (tornado)",
+    "P2": "IV smile / skew by expiry",
+    "P3": "ATM IV term structure",
+    "P4": "Greeks — ATM ~30-DTE call & put",
+    "P5": "Implied vs realized volatility",
+}
 
 _CSS = """
 body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
@@ -60,10 +94,10 @@ h1 { margin-top: 28px; } h2 { margin-top: 40px; border-bottom: 2px solid #eee;
 .placeholder { font-style: italic; } footer { margin-top: 48px;
      border-top: 1px solid #eee; padding-top: 12px; }
 .figure { width: 100%; overflow-x: auto; }
-"""
+""" + TILES_CSS + ".stat { font-weight: 600; margin: 4px 0 8px; }\n"
 
 
-def render_page(figures: dict, status: dict) -> str:
+def render_page(figures: dict, status: dict, extras: dict | None = None) -> str:
     bundle = _BUNDLE.read_text()
     parts = [
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
@@ -85,7 +119,9 @@ def render_page(figures: dict, status: dict) -> str:
         rendered_any = False
         for pid in panel_ids:
             if pid in figures:
-                parts.append(f"<h3>{_PANEL_TITLES[pid]}</h3><div class='figure'>")
+                parts.append(f"<h3>{_PANEL_TITLES[pid]}</h3>")
+                parts.append((extras or {}).get(pid, ""))
+                parts.append("<div class='figure'>")
                 parts.append(pio.to_html(
                     figures[pid], full_html=False, include_plotlyjs=False,
                     config={"responsive": True, "displaylogo": False}))
@@ -99,6 +135,8 @@ def render_page(figures: dict, status: dict) -> str:
         f"{status['last_success_utc']} · {status['rows_stored']} contracts "
         "stored · SPY options are American-style, priced here with a "
         "European model (a measured approximation, discussed in the "
-        "repository). Source code: GitHub (link once public).</footer>",
+        "repository). Source code: <a href='https://github.com/TK-Chang239/"
+        "BlackScholesVolDashboard'>github.com/TK-Chang239/"
+        "BlackScholesVolDashboard</a>.</footer>",
         "</body></html>"])
     return "".join(parts)

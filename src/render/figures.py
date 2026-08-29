@@ -111,3 +111,37 @@ def build_greeks_curves_figure(curves: pd.DataFrame, spot: float) -> go.Figure:
     fig.update_layout(title=title, **_LAYOUT)
     fig.update_xaxes(title_text="Strike")
     return fig
+
+
+def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Figure:
+    rv_cfg = cfg["realized_vol"]
+    title = "Implied vs realized volatility — ~30-DTE ATM IV against what SPY actually did"
+    if series.empty:
+        return _empty_figure(title, "No sessions with a 30-DTE ATM implied vol yet")
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Scatter(
+        x=series["date"], y=series["rv_trailing"], mode="lines+markers",
+        name=f"Realized vol, trailing {rv_cfg['windows'][0]}d", line=dict(color="#55a868"),
+        marker=dict(size=4), hovertemplate="%{x}: %{y:.1%}<extra>trailing RV</extra>"))
+    fig.add_trace(go.Scatter(
+        x=series["date"], y=series["atm_iv"], mode="lines+markers",
+        name="Implied vol, ~30-DTE ATM", line=dict(color="#4c72b0"), marker=dict(size=4),
+        fill="tonexty", fillcolor="rgba(76,114,176,0.12)",
+        hovertemplate="%{x}: %{y:.1%}<extra>implied</extra>"))
+    fig.add_trace(go.Scatter(
+        x=series["date"], y=series["fwd_rv"], mode="lines+markers",
+        name=f"Realized vol, forward {rv_cfg['forward_horizon_days']}d (plotted at quote date)",
+        line=dict(color="#dd8452", dash="dash"), marker=dict(size=4), connectgaps=False,
+        hovertemplate="%{x}: %{y:.1%}<extra>forward RV</extra>"))
+    fig.add_trace(go.Scatter(
+        x=series["date"], y=series["spread_running_mean"], mode="lines",
+        name="Running mean of IV − trailing RV", line=dict(color="grey", dash="dot"),
+        hovertemplate="%{x}: %{y:+.1%}<extra>mean spread</extra>"), secondary_y=True)
+    since = summary["history_since"].isoformat() if summary["history_since"] else "n/a"
+    fig.add_annotation(text=f"accumulating since {since} · {summary['n_sessions']} sessions",
+                       xref="paper", yref="paper", x=0.0, y=1.08, showarrow=False,
+                       font=dict(size=11, color="#555"), xanchor="left")
+    fig.update_layout(title=title, **_LAYOUT)
+    fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", secondary_y=False)
+    fig.update_yaxes(title_text="Spread", tickformat="+.0%", secondary_y=True, showgrid=False)
+    return fig
