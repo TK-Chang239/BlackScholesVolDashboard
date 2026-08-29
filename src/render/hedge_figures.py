@@ -1,5 +1,6 @@
-"""P8 figures: cumulative P&L, the P&L-vs-edge scatter, the daily P&L histogram.
+"""P8 figures: cumulative P&L and the daily P&L histogram.
 
+The P&L-vs-edge scatter, the third P8 figure, arrives in a later task.
 Kept out of figures.py so neither file has to hold every panel on the page.
 All money is per share: the simulation sells ONE option on ONE share.
 """
@@ -12,8 +13,7 @@ from src.render.base import LAYOUT, empty_figure
 _PNL_AXIS = "P&L ($ per share)"
 
 
-def build_hedge_pnl_figure(port: pd.DataFrame, trades: pd.DataFrame,
-                           daily: pd.DataFrame) -> go.Figure:
+def build_hedge_pnl_figure(port: pd.DataFrame, daily: pd.DataFrame) -> go.Figure:
     """Portfolio cumulative P&L, with each trade's own running P&L behind it."""
     if port.empty:
         return empty_figure("Cumulative P&L — all simulated trades",

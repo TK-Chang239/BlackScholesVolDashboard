@@ -760,10 +760,23 @@ class TestHedgeFigures:
             "lifetime_rv": [0.12], "edge": [0.08], "status": ["open"],
         })
 
+    def _daily_overlapping(self):
+        # Two trades, both live on 2026-06-02 and 2026-06-03: entry_date A opens
+        # first and is still open when entry_date B opens. Row order is
+        # deliberately NOT date-sorted within a group, so the test also covers
+        # the implementation's own `g.sort_values("date")` before plotting.
+        import datetime as dt
+        return pd.DataFrame({
+            "date": [dt.date(2026, 6, 3), dt.date(2026, 6, 1), dt.date(2026, 6, 2),
+                     dt.date(2026, 6, 4), dt.date(2026, 6, 2), dt.date(2026, 6, 3)],
+            "entry_date": [dt.date(2026, 6, 1)] * 3 + [dt.date(2026, 6, 2)] * 3,
+            "pv": [1.0, 0.0, 0.5, 0.2, 0.0, -0.3],
+        })
+
     def test_pnl_figure_plots_the_cumulative_line(self):
         from src.render.hedge_figures import build_hedge_pnl_figure
         port = self._port()
-        fig = build_hedge_pnl_figure(port, self._trades(), pd.DataFrame())
+        fig = build_hedge_pnl_figure(port, pd.DataFrame())
         cum = [t for t in fig.data if "cumulative" in (t.name or "").lower()]
         assert len(cum) == 1
         assert list(cum[0].y) == port["pnl_cum"].tolist()
@@ -773,9 +786,20 @@ class TestHedgeFigures:
         from src.render.hedge_figures import build_hedge_pnl_figure
         fig = build_hedge_pnl_figure(
             pd.DataFrame(columns=["date", "pnl_day", "pnl_cum", "n_open"]),
-            pd.DataFrame(), pd.DataFrame())
+            pd.DataFrame())
         assert len(fig.data) == 0
         assert fig.layout.annotations[0].text
+
+    def test_pnl_figure_overlays_one_line_per_overlapping_trade(self):
+        from src.render.hedge_figures import build_hedge_pnl_figure
+        fig = build_hedge_pnl_figure(self._port(), self._daily_overlapping())
+        overlay = [t for t in fig.data if (t.name or "").startswith("trade ")]
+        assert len(overlay) == 2
+        by_name = {t.name: list(t.y) for t in overlay}
+        assert set(by_name) == {"trade 2026-06-01", "trade 2026-06-02"}
+        # date-sorted within each group, not the input row order
+        assert by_name["trade 2026-06-01"] == [0.0, 0.5, 1.0]
+        assert by_name["trade 2026-06-02"] == [0.0, -0.3, 0.2]
 
     def test_histogram_excludes_the_zero_entry_day_and_marks_the_mean(self):
         from src.render.hedge_figures import build_hedge_histogram_figure
