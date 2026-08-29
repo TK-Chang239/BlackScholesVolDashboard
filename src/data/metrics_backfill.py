@@ -14,6 +14,7 @@ from src.analytics.chain_iv import compute_chain_iv
 from src.analytics.daily_metrics import (
     metric_columns, refresh_rv_columns, session_metrics_row, upsert_session,
 )
+from src.analytics.skew import compute_skew_25d
 from src.analytics.term_structure import compute_term_structure
 from src.data import storage
 
@@ -34,8 +35,9 @@ def rebuild_daily_metrics(root: Path, r: float, q: float, cfg: dict,
         chain = pd.read_parquet(path)
         chain_iv, stats = compute_chain_iv(chain, r, q)
         term = compute_term_structure(chain_iv)
+        skew = compute_skew_25d(chain_iv, r, q, cfg)
         row = session_metrics_row(session, float(chain["spot"].iloc[0]),
-                                  chain_source_label(chain), term, stats, cfg)
+                                  chain_source_label(chain), term, stats, cfg, skew=skew)
         metrics = upsert_session(metrics, row, cfg)
     metrics = refresh_rv_columns(metrics, storage.read_underlying(root), cfg)
     if write:

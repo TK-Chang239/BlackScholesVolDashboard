@@ -23,7 +23,8 @@ def chain(session, spot, sigma, source, expiries=((30, 0), (60, 0))):
     rows = []
     for dte, _ in expiries:
         expiry = session + dt.timedelta(days=dte)
-        for strike in (spot - 20.0, spot - 10.0, spot, spot + 10.0, spot + 20.0):
+        for strike in (spot - 60.0, spot - 40.0, spot - 20.0, spot, spot + 20.0, spot + 40.0,
+                       spot + 60.0):
             for kind in ("call", "put"):
                 px = float(bs_price(spot, strike, dte / 365.0, R, sigma, Q, kind))
                 live = source == "yfinance"
@@ -76,3 +77,10 @@ class TestRebuild:
         a = rebuild_daily_metrics(tmp_path, R, Q, cfg())
         b = rebuild_daily_metrics(tmp_path, R, Q, cfg())
         pd.testing.assert_frame_equal(a, b)
+
+    def test_rebuild_fills_skew_columns(self, tmp_path):
+        s1, s2 = seed(tmp_path)
+        out = rebuild_daily_metrics(tmp_path, R, Q, cfg())
+        assert "skew_25d" in out.columns and "skew_25d_dte" in out.columns
+        assert out["skew_25d"].abs().max() < 1e-6          # flat vol -> zero skew on both sessions
+        assert (out["skew_25d_dte"] == 30).all()

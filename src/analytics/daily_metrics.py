@@ -13,7 +13,8 @@ import pandas as pd
 
 from src.models.realized_vol import forward_realized_vol, trailing_realized_vol
 
-IV_COLUMNS = ["date", "spot", "source", "atm_iv_30d", "atm_iv_30d_dte", "iv_convergence"]
+IV_COLUMNS = ["date", "spot", "source", "atm_iv_30d", "atm_iv_30d_dte", "iv_convergence",
+              "skew_25d", "skew_25d_dte"]
 ATM_NEAREST_TOLERANCE_DAYS = 10
 
 
@@ -44,12 +45,16 @@ def interp_atm_iv(term: pd.DataFrame, target_dte: int) -> tuple[float, float]:
 
 
 def session_metrics_row(session_date: dt.date, spot: float, source: str,
-                        term: pd.DataFrame, iv_stats: dict, cfg: dict) -> dict:
+                        term: pd.DataFrame, iv_stats: dict, cfg: dict,
+                        skew: dict | None = None) -> dict:
     atm_iv, eff_dte = interp_atm_iv(term, int(cfg["target_dte"]["atm_panel"]))
+    skew = skew or {}
     return {
         "date": session_date, "spot": float(spot), "source": source,
         "atm_iv_30d": atm_iv, "atm_iv_30d_dte": eff_dte,
         "iv_convergence": float(iv_stats["convergence"]),
+        "skew_25d": float(skew.get("skew_25d", np.nan)),
+        "skew_25d_dte": float(skew.get("skew_dte", np.nan)),
     }
 
 
