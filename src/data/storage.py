@@ -42,6 +42,30 @@ def upsert_underlying(df_new: pd.DataFrame, root: Path) -> Path:
     return _atomic_parquet(merged, path)
 
 
+def read_underlying(root: Path) -> pd.DataFrame:
+    return pd.read_parquet(Path(root) / "data" / "underlying.parquet")
+
+
+def daily_metrics_path(root: Path) -> Path:
+    return Path(root) / "data" / "daily_metrics.parquet"
+
+
+def read_daily_metrics(root: Path, columns: list[str]) -> pd.DataFrame:
+    path = daily_metrics_path(root)
+    if not path.exists():
+        return pd.DataFrame(columns=columns)
+    return pd.read_parquet(path).reindex(columns=columns)
+
+
+def write_daily_metrics(df: pd.DataFrame, root: Path) -> Path:
+    if "date" not in df.columns:
+        raise ValueError("daily_metrics needs a 'date' column")
+    if df["date"].duplicated().any():
+        raise ValueError("daily_metrics has duplicate dates")
+    return _atomic_parquet(df.sort_values("date").reset_index(drop=True),
+                           daily_metrics_path(root))
+
+
 def write_status(status: dict, root: Path) -> Path:
     path = Path(root) / "docs" / "status.json"
     path.parent.mkdir(parents=True, exist_ok=True)
