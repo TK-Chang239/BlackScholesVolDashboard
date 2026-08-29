@@ -399,6 +399,42 @@ class TestParityFigure:
         hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
         assert hot_vals == pytest.approx([0.9, 0.9])
 
+    def test_early_exercise_explained_violation_is_muted(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["early_exercise_bound"] = 5.0
+        # the 28-day violation is inside the bound; the 84-day one is not
+        p["early_exercise_explained"] = p["tradeable_violation_fwd"] & (p["dte"] == 28)
+        fig = build_parity_figure(p, 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9])          # only the unexplained one stays hot
+        assert any("early-exercise bound" in (a.text or "") for a in fig.layout.annotations)
+        assert any("1 put-rich gap" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_no_early_exercise_annotation_when_nothing_is_explained(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["early_exercise_bound"] = 5.0
+        p["early_exercise_explained"] = False
+        fig = build_parity_figure(p, 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9, 0.9])
+        assert not any("early-exercise" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_colour_limit_is_set_by_liquid_cells_only(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        dead = p.iloc[[0, 0, 0]].copy()          # three strikes nobody holds...
+        dead["strike"] = [600.0, 620.0, 640.0]
+        dead[["deviation", "deviation_fwd"]] = 160.0     # ...quoted at nonsense
+        dead["liquid"] = False
+        fig = build_parity_figure(pd.concat([p, dead], ignore_index=True), 770.0)
+        faint = [t for t in fig.data if t.type == "heatmap"][0]
+        assert faint.zmax == pytest.approx(0.9)          # set by the liquid bulk
+        assert faint.zmin == pytest.approx(-0.9)
+
     def test_empty(self):
         from src.analytics.parity import PARITY_COLUMNS
         from src.render.figures import build_parity_figure
@@ -443,24 +479,39 @@ class TestParityStat:
     def _summary(self, **over):
         s = {"n_pairs": 420, "n_quoted": 420, "n_liquid": 400,
              "n_tradeable_violations": 132, "n_tradeable_violations_fwd": 3,
+             "n_violations_early_exercise": 2, "n_violations_unexplained": 1,
              "share_within_spread": 0.6857, "share_within_spread_fwd": 0.9929,
              "max_abs_deviation": 160.28, "max_abs_deviation_fwd": 1.42}
         s.update(over)
         return s
 
-    def test_quoted_sentence_leads_with_the_calibrated_count(self):
+    def test_quoted_sentence_leads_with_the_unexplained_count(self):
         from src.render.stats import parity_summary_html
         html = parity_summary_html(self._summary(), 0.0281, 84.0, 0.0383, 0.0098)
-        assert "400 liquid" in html and "3 tradeable violations" in html
+        assert "400 liquid" in html
+        assert "1 unexplained tradeable violation" in html
+        assert "2 more put-rich gaps" in html and "early-exercise bound" in html
+        assert "not arbitrage" in html
+        assert "in-the-money" not in html          # only 38 of the 40 really are
+        # the calibrated total and the raw spot-based number stay visible
+        assert "3 tradeable violations" in html
         assert "99.3%" in html and "forward is calibrated" in html
-        # the raw spot-based number stays visible and explained
         assert "132" in html and "420" in html
         assert "2.81%" in html and "2.85%" in html and "84-day" in html
+
+    def test_no_early_exercise_clause_when_none_are_explained(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(
+            self._summary(n_violations_early_exercise=0, n_violations_unexplained=3),
+            0.0281, 84.0, 0.0383, 0.0098)
+        assert "3 unexplained tradeable violations" in html
+        assert "early-exercise" not in html and "0 more" not in html
 
     def test_singular_violation_and_missing_share(self):
         from src.render.stats import parity_summary_html
         html = parity_summary_html(
             self._summary(n_tradeable_violations_fwd=1, n_tradeable_violations=1,
+                          n_violations_early_exercise=0, n_violations_unexplained=1,
                           n_liquid=0, share_within_spread_fwd=float("nan")),
             float("nan"), float("nan"), 0.0383, 0.0098)
         assert "1 tradeable violation " in html and "nan" not in html.lower()
@@ -469,6 +520,7 @@ class TestParityStat:
     def test_close_based_sentence(self):
         from src.render.stats import parity_summary_html
         s = self._summary(n_quoted=0, n_tradeable_violations=0, n_tradeable_violations_fwd=0,
+                          n_violations_early_exercise=0, n_violations_unexplained=0,
                           share_within_spread=float("nan"),
                           share_within_spread_fwd=float("nan"))
         html = parity_summary_html(s, float("nan"), float("nan"), 0.0383, 0.0098)

@@ -184,6 +184,8 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "parity_liquid_pairs": psum["n_liquid"],
         "parity_tradeable_violations": psum["n_tradeable_violations"],
         "parity_tradeable_violations_fwd": psum["n_tradeable_violations_fwd"],
+        "parity_violations_early_exercise": psum["n_violations_early_exercise"],
+        "parity_violations_unexplained": psum["n_violations_unexplained"],
         "implied_carry": round(carry_value, 6) if np.isfinite(carry_value) else None,
         "implied_carry_dte": int(carry_dte) if np.isfinite(carry_dte) else None,
         "panels_rendered": sorted(figures),

@@ -183,3 +183,82 @@ class TestLiquidity:
         assert s["n_pairs"] == 12 and s["n_liquid"] == 10
         assert s["n_tradeable_violations"] == 1 and s["n_tradeable_violations_fwd"] == 1
         assert s["share_within_spread_fwd"] == pytest.approx(0.9)
+
+
+class TestEarlyExercise:
+    def test_bound_is_interest_on_strike_less_forgone_dividends(self):
+        p = compute_parity(make_chain(), R, Q)
+        row = p[(p["strike"] == 840.0) & (p["dte"] == 84)].iloc[0]
+        T = 84 / 365.0
+        expected = 840.0 * (1 - np.exp(-R * T)) - SPOT * (1 - np.exp(-Q * T))
+        assert row["early_exercise_bound"] == pytest.approx(expected, rel=1e-12)
+        assert (p["early_exercise_bound"] >= 0).all()
+
+    def test_itm_put_gap_within_the_bound_is_explained(self):
+        # Make the ITM put richer by an amount an American holder could justify:
+        # three quarters of the early-exercise bound ($4.69), inside the bound
+        # ($6.25) and well outside the pair's combined spread ($1.71).
+        chain = make_chain()
+        m = (chain["kind"] == "put") & (chain["strike"] == 840.0) & (chain["dte"] == 84)
+        T = 84 / 365.0
+        bound = 840.0 * (1 - np.exp(-R * T)) - SPOT * (1 - np.exp(-Q * T))
+        chain.loc[m, "price_used"] = chain.loc[m, "price_used"] + bound * 0.75
+        p = compute_parity(chain, R, Q)
+        row = p[(p["strike"] == 840.0) & (p["dte"] == 84)].iloc[0]
+        assert bool(row["tradeable_violation_fwd"]) is True
+        assert bool(row["early_exercise_explained"]) is True
+
+    def test_gap_beyond_the_bound_is_not_explained(self):
+        chain = make_chain()
+        m = (chain["kind"] == "put") & (chain["strike"] == 840.0) & (chain["dte"] == 84)
+        chain.loc[m, "price_used"] = chain.loc[m, "price_used"] + 60.0
+        p = compute_parity(chain, R, Q)
+        row = p[(p["strike"] == 840.0) & (p["dte"] == 84)].iloc[0]
+        assert bool(row["tradeable_violation_fwd"]) is True
+        assert bool(row["early_exercise_explained"]) is False
+
+    def test_wrong_sign_gap_is_never_explained(self):
+        # A call that is too rich pushes deviation POSITIVE; early exercise of a
+        # put cannot explain that direction.
+        chain = make_chain()
+        m = (chain["kind"] == "call") & (chain["strike"] == 840.0) & (chain["dte"] == 84)
+        chain.loc[m, "price_used"] = chain.loc[m, "price_used"] + 60.0
+        p = compute_parity(chain, R, Q)
+        row = p[(p["strike"] == 840.0) & (p["dte"] == 84)].iloc[0]
+        assert row["deviation_fwd"] > 0
+        assert bool(row["early_exercise_explained"]) is False
+
+    def test_a_small_gap_inside_the_spread_is_no_violation_and_not_explained(self):
+        # "explained" reads as "this violation is explained", never as
+        # "this row could be explained": a non-violating row is always False.
+        p = compute_parity(make_chain(), R, Q)
+        assert not p["tradeable_violation_fwd"].any()
+        assert not p["early_exercise_explained"].any()
+        s = parity_summary(p)
+        assert s["n_violations_early_exercise"] == 0
+        assert s["n_violations_unexplained"] == 0
+
+    def test_summary_splits_violations_and_they_sum(self):
+        chain = make_chain()
+        T = 84 / 365.0
+        bound = 840.0 * (1 - np.exp(-R * T)) - SPOT * (1 - np.exp(-Q * T))
+        chain.loc[(chain["kind"] == "put") & (chain["strike"] == 840.0) & (chain["dte"] == 84),
+                  "price_used"] += bound * 0.75
+        chain.loc[(chain["kind"] == "put") & (chain["strike"] == 700.0) & (chain["dte"] == 84),
+                  "price_used"] += 60.0
+        s = parity_summary(compute_parity(chain, R, Q))
+        assert s["n_violations_early_exercise"] + s["n_violations_unexplained"] \
+            == s["n_tradeable_violations_fwd"]
+        assert s["n_violations_early_exercise"] >= 1 and s["n_violations_unexplained"] >= 1
+
+    def test_non_liquid_violations_are_counted_in_neither_bucket(self):
+        chain = make_chain()
+        T = 84 / 365.0
+        bound = 840.0 * (1 - np.exp(-R * T)) - SPOT * (1 - np.exp(-Q * T))
+        chain.loc[(chain["kind"] == "put") & (chain["strike"] == 840.0), "open_interest"] = 0.0
+        chain.loc[(chain["kind"] == "put") & (chain["strike"] == 840.0) & (chain["dte"] == 84),
+                  "price_used"] += bound * 0.75
+        s = parity_summary(compute_parity(chain, R, Q))
+        assert s["n_violations_early_exercise"] == 0
+        assert s["n_violations_unexplained"] == 0
+        assert s["n_tradeable_violations_fwd"] == 0

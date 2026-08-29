@@ -297,16 +297,26 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
     viol_col = "tradeable_violation_fwd" if calibrated else "tradeable_violation"
     title = ("Put-call parity — C − P against the market's own implied forward"
              if calibrated else raw_title)
-    liquid = p["liquid"].astype(bool) if "liquid" in p.columns else True
+    liquid = (p["liquid"].astype(bool) if "liquid" in p.columns
+              else pd.Series(True, index=p.index))
+    # An in-the-money put gap inside the American early-exercise bound is not
+    # arbitrage, so it must not read as an alarm: it stays in the faint layer.
+    explained = (p["early_exercise_explained"].astype(bool)
+                 if "early_exercise_explained" in p.columns
+                 else pd.Series(False, index=p.index))
     p["label"] = [_expiry_label(e, d) for e, d in zip(p["expiry"], p["dte"])]
     order = (p[["label", "dte"]].drop_duplicates().sort_values("dte")["label"].tolist())
     z_all = p.pivot(index="strike", columns="label", values=value_col).reindex(columns=order)
-    hot = p[value_col].where(p[viol_col].astype(bool) & liquid)
+    hot = p[value_col].where(p[viol_col].astype(bool) & liquid & ~explained)
     z_hot = p.assign(hot=hot).pivot(index="strike", columns="label", values="hot").reindex(columns=order)
-    # Robust colour limit: one stale deep-ITM quote can be a $160 outlier and
-    # would otherwise flatten every real cell to white.
-    flat = np.abs(z_all.to_numpy(dtype=float).ravel())
-    finite = flat[np.isfinite(flat)]
+    # Robust colour limit, read off the LIQUID cells only: a strike with no open
+    # interest can carry a $160 stale-quote outlier, and letting it into the
+    # percentile flattens every tradeable cell to white.
+    vals = np.abs(p.loc[liquid, value_col].to_numpy(dtype=float))
+    finite = vals[np.isfinite(vals)]
+    if finite.size == 0:                    # nothing liquid: scale on what there is
+        vals = np.abs(p[value_col].to_numpy(dtype=float))
+        finite = vals[np.isfinite(vals)]
     lim = float(np.percentile(finite, 98, method="lower")) if finite.size else 1.0
     lim = max(lim, 0.05)
     fig = go.Figure()
@@ -321,6 +331,14 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
         fig.add_annotation(text="close-based session — spreads unknown, tradeability not assessable",
                            xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
                            xanchor="left", font=dict(size=11, color="#555"))
+    n_ee = int((explained & liquid).sum())
+    if n_ee:
+        fig.add_annotation(
+            text=(f"{n_ee} put-rich gap{'' if n_ee == 1 else 's'} within the American "
+                  f"early-exercise bound {'is' if n_ee == 1 else 'are'} shown muted "
+                  "— not arbitrage"),
+            xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
+            xanchor="left", font=dict(size=11, color="#555"))
     fig.update_layout(title=title, **_LAYOUT)
     fig.update_xaxes(title_text="Expiry")
     fig.update_yaxes(title_text="Strike")

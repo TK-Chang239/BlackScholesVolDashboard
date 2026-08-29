@@ -21,13 +21,21 @@ between the two is itself the measurement.
 
 `implied_forward` reports the calibrated forward and the carry it
 implies, ln(F/S)/T, which under our assumptions must equal r - q.
+
+What survives the calibration is mostly not arbitrage either: SPY options
+are American, and an early-exercisable in-the-money put is worth more than
+the European one parity is written for. `early_exercise_bound` prices the
+most that effect can be worth, and `early_exercise_explained` marks the
+violations that fit inside it, so the headline count is the residue that
+nothing in this file can account for.
 """
 import numpy as np
 import pandas as pd
 
 PARITY_COLUMNS = ["expiry", "dte", "strike", "moneyness", "call_price", "put_price",
                   "call_oi", "put_oi", "liquid", "lhs", "rhs", "deviation",
-                  "forward", "deviation_fwd", "spread",
+                  "forward", "deviation_fwd", "early_exercise_bound",
+                  "early_exercise_explained", "spread",
                   "tradeable_violation", "tradeable_violation_fwd"]
 CARRY_COLUMNS = ["expiry", "dte", "implied_carry"]
 FORWARD_COLUMNS = ["expiry", "dte", "forward", "implied_carry"]
@@ -72,6 +80,28 @@ def compute_parity(chain_iv: pd.DataFrame, r: float, q: float) -> pd.DataFrame:
     p["tradeable_violation_fwd"] = ((p["deviation_fwd"].abs() > p["spread"])
                                     & p["spread"].notna()
                                     & p["deviation_fwd"].notna()).astype(bool)
+
+    # SPY options are American. An American put is worth at least its intrinsic
+    # K - S, while its European twin is worth K*e^{-rT} - S*e^{-qT} + C, so the
+    # most that early exercise can add to P -- and therefore the most it can
+    # push C - P BELOW the parity forward -- is
+    #     K*(1 - e^{-rT}) - S*(1 - e^{-qT}),
+    # the interest earned on the strike less the dividends forgone by exercising
+    # early. It depends only on K, T, r, q, S: no quote enters it. It is a
+    # BOUND, not a price: it says what early exercise could be worth at most.
+    # For a short T and a fat q it can come out negative -- early exercise is
+    # then worth nothing at all -- so clip at zero.
+    p["early_exercise_bound"] = np.maximum(
+        p["strike"].to_numpy(dtype=float) * (1.0 - np.exp(-r * T))
+        - spot * (1.0 - np.exp(-q * T)), 0.0)
+    # Reads as "this violation is explained", never "this row is explainable":
+    # false wherever there is no tradeable violation to explain. Only a NEGATIVE
+    # gap can be an early-exercise story -- a rich call pushes the other way.
+    p["early_exercise_explained"] = (
+        p["tradeable_violation_fwd"].astype(bool)
+        & (p["deviation_fwd"] < 0)
+        & (p["deviation_fwd"].abs() <= p["early_exercise_bound"] + p["spread"])
+    ).astype(bool)
     return (p[PARITY_COLUMNS].sort_values(["expiry", "strike"])
             .reset_index(drop=True))
 
@@ -84,12 +114,18 @@ def parity_summary(parity: pd.DataFrame) -> dict:
     n_liq_quoted = int(len(liquid_quoted))
     n_viol = int(parity["tradeable_violation"].sum()) if n else 0
     n_viol_fwd = int(liquid_quoted["tradeable_violation_fwd"].sum()) if n else 0
+    explained = (liquid_quoted["early_exercise_explained"].astype(bool)
+                 if n else pd.Series(dtype=bool))
+    n_ee = int(explained.sum()) if n else 0
     return {
         "n_pairs": n,
         "n_quoted": n_quoted,
         "n_liquid": int(parity["liquid"].astype(bool).sum()) if n else 0,
         "n_tradeable_violations": n_viol,
         "n_tradeable_violations_fwd": n_viol_fwd,
+        # the two split n_tradeable_violations_fwd exactly
+        "n_violations_early_exercise": n_ee,
+        "n_violations_unexplained": n_viol_fwd - n_ee,
         "share_within_spread": (1.0 - n_viol / n_quoted) if n_quoted else np.nan,
         "share_within_spread_fwd": ((1.0 - n_viol_fwd / n_liq_quoted)
                                     if n_liq_quoted else np.nan),

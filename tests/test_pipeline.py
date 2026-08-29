@@ -354,6 +354,8 @@ class TestPhase5Stage:
         assert status["parity_tradeable_violations"] in (0, 1)
         # one strike cannot bracket spot -> no forward, so nothing is calibratable
         assert status["parity_tradeable_violations_fwd"] == 0
+        assert status["parity_violations_early_exercise"] == 0
+        assert status["parity_violations_unexplained"] == 0
         assert status["implied_carry"] is None and status["implied_carry_dte"] is None
         assert status["skew_25d"] is None
         m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
@@ -388,6 +390,9 @@ class TestPhase5Stage:
         assert status["parity_pairs"] == 21 and status["parity_tradeable_violations"] == 0
         assert status["parity_liquid_pairs"] == 21
         assert status["parity_tradeable_violations_fwd"] == 0
+        # the synthetic chain satisfies parity exactly: nothing to explain either way
+        assert status["parity_violations_early_exercise"] == 0
+        assert status["parity_violations_unexplained"] == 0
         assert status["implied_carry"] == pytest.approx(0.0415 - 0.0098, abs=1e-6)
         assert status["implied_carry_dte"] == 28      # only expiry available, below min_dte
         m = pd.read_parquet(storage.daily_metrics_path(tmp_path))

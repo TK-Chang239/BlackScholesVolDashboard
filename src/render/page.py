@@ -81,7 +81,10 @@ CAPTIONS = {
         "traded. Deep "
         "in-the-money puts often show a residual gap that is not arbitrage — SPY "
         "options are American, and early exercise makes European parity only "
-        "approximate there. This model-free check is why desks trust Black-Scholes "
+        "approximate there — so those are muted too, whenever the gap fits inside "
+        "K·(1 − e⁻ʳᵀ) − S·(1 − e⁻ᵠᵀ), the most that exercising early could be "
+        "worth. Only what survives both tests is left burning. This model-free "
+        "check is why desks trust Black-Scholes "
         "as a quoting convention even when they distrust it as a forecast."
     ),
     "P9": (
