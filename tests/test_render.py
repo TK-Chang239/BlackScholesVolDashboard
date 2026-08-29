@@ -737,3 +737,58 @@ class TestParityStat:
         from src.render.stats import parity_summary_html
         s = self._summary(n_pairs=0, n_quoted=0, n_liquid=0)
         assert "No strike" in parity_summary_html(s, self._no_carry(), 0.04, 0.01)
+
+
+class TestHedgeFigures:
+    def _port(self):
+        import datetime as dt
+        return pd.DataFrame({
+            "date": [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(5)],
+            "pnl_day": [0.0, 1.0, -0.5, 2.0, -1.0],
+            "pnl_cum": [0.0, 1.0, 0.5, 2.5, 1.5],
+            "n_open": [1, 1, 1, 2, 2],
+        })
+
+    def _trades(self):
+        import datetime as dt
+        return pd.DataFrame({
+            "entry_date": [dt.date(2026, 6, 1)], "expiry": [dt.date(2026, 7, 17)],
+            "strike": [100.0], "dte_at_entry": [30], "entry_iv": [0.20],
+            "entry_straddle": [6.0], "exit_date": [dt.date(2026, 6, 5)],
+            "exit_value": [4.0], "pnl": [1.5], "n_days": [4],
+            "n_market_marks": [4], "n_model_marks": [0], "market_mark_share": [1.0],
+            "lifetime_rv": [0.12], "edge": [0.08], "status": ["open"],
+        })
+
+    def test_pnl_figure_plots_the_cumulative_line(self):
+        from src.render.hedge_figures import build_hedge_pnl_figure
+        port = self._port()
+        fig = build_hedge_pnl_figure(port, self._trades(), pd.DataFrame())
+        cum = [t for t in fig.data if "cumulative" in (t.name or "").lower()]
+        assert len(cum) == 1
+        assert list(cum[0].y) == port["pnl_cum"].tolist()
+        assert "$" in fig.layout.yaxis.title.text
+
+    def test_pnl_figure_is_empty_state_with_no_data(self):
+        from src.render.hedge_figures import build_hedge_pnl_figure
+        fig = build_hedge_pnl_figure(
+            pd.DataFrame(columns=["date", "pnl_day", "pnl_cum", "n_open"]),
+            pd.DataFrame(), pd.DataFrame())
+        assert len(fig.data) == 0
+        assert fig.layout.annotations[0].text
+
+    def test_histogram_excludes_the_zero_entry_day_and_marks_the_mean(self):
+        from src.render.hedge_figures import build_hedge_histogram_figure
+        fig = build_hedge_histogram_figure(self._port())
+        bars = [t for t in fig.data if t.type == "histogram"]
+        assert len(bars) == 1
+        assert list(bars[0].x) == [1.0, -0.5, 2.0, -1.0]
+        assert any("mean" in (a.text or "").lower() for a in fig.layout.annotations)
+
+    def test_histogram_is_empty_state_with_one_day(self):
+        from src.render.hedge_figures import build_hedge_histogram_figure
+        import datetime as dt
+        one = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
+                            "pnl_cum": [0.0], "n_open": [1]})
+        fig = build_hedge_histogram_figure(one)
+        assert len(fig.data) == 0
