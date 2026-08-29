@@ -174,7 +174,7 @@ class TestIvRvFigure:
         assert any("implied" in n.lower() for n in names)
         assert any("trailing" in n.lower() for n in names)
         assert any("forward" in n.lower() for n in names)
-        assert any(t.fill == "tonexty" for t in fig.data)
+        assert any(t.fill == "toself" for t in fig.data)
         assert any("2026-08-20" in (a.text or "") for a in fig.layout.annotations)
 
     def test_empty_series(self):

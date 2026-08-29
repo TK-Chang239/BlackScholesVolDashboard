@@ -128,11 +128,11 @@ def build_greeks_curves_figure(curves: pd.DataFrame, spot: float) -> go.Figure:
 def _break_gaps(series: pd.DataFrame, max_gap_days: int = 30) -> pd.DataFrame:
     """Insert an all-NaN row between sessions more than `max_gap_days` apart.
 
-    Scatter traces default to connectgaps=False, so a NaN y-value stops both
-    the line and a `tonexty` fill; without this, a long silent stretch in the
-    stored history (e.g. a single depth-probe session two years before the
-    daily series starts) draws a straight diagonal segment -- and a huge
-    shaded wedge -- across the gap instead of leaving it visibly empty.
+    Scatter traces default to connectgaps=False, so a NaN y-value stops the
+    line; without this, a long silent stretch in the stored history (e.g. a
+    single depth-probe session two years before the daily series starts)
+    draws a straight diagonal segment across the gap instead of leaving it
+    visibly empty.
     """
     if len(series) < 2:
         return series
@@ -147,6 +147,41 @@ def _break_gaps(series: pd.DataFrame, max_gap_days: int = 30) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=series.columns)
 
 
+def _iv_rv_band_traces(plotted: pd.DataFrame) -> list[go.Scatter]:
+    """One closed toself polygon per contiguous (IV, trailing-RV) run.
+
+    A single `tonexty` fill on the IV line bridges straight across a NaN gap
+    even when the line itself breaks there, so a wide shaded wedge would
+    still cross a long silent stretch (e.g. the 2024 depth probe, ~1.9 years
+    before the 2026 series) and bleed into the 180-day default view. Building
+    one explicit polygon per contiguous run of real data keeps the band
+    confined to where both series actually have values.
+    """
+    traces: list[go.Scatter] = []
+    valid = plotted["atm_iv"].notna() & plotted["rv_trailing"].notna()
+    run: list[int] = []
+    for i, ok in enumerate(valid):
+        if ok:
+            run.append(i)
+            continue
+        if run:
+            traces.append(_band_trace(plotted, run))
+            run = []
+    if run:
+        traces.append(_band_trace(plotted, run))
+    return traces
+
+
+def _band_trace(plotted: pd.DataFrame, run: list[int]) -> go.Scatter:
+    dates = plotted["date"].iloc[run].tolist()
+    iv = plotted["atm_iv"].iloc[run].tolist()
+    rv_trailing = plotted["rv_trailing"].iloc[run].tolist()
+    return go.Scatter(
+        x=list(dates) + list(dates[::-1]), y=list(iv) + list(rv_trailing[::-1]),
+        fill="toself", fillcolor="rgba(76,114,176,0.12)", line=dict(width=0),
+        hoverinfo="skip", showlegend=False, name="IV − RV band")
+
+
 def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Figure:
     rv_cfg = cfg["realized_vol"]
     title = "Implied vs realized volatility — ~30-DTE ATM IV against what SPY actually did"
@@ -154,6 +189,8 @@ def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Fig
         return _empty_figure(title, "No sessions with a 30-DTE ATM implied vol yet")
     plotted = _break_gaps(series)
     fig = make_subplots(specs=[[{"secondary_y": True}]])
+    for band in _iv_rv_band_traces(plotted):
+        fig.add_trace(band)
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["rv_trailing"], mode="lines+markers",
         name=f"Realized, trailing {rv_cfg['windows'][0]}d", line=dict(color="#55a868"),
@@ -161,7 +198,6 @@ def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Fig
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["atm_iv"], mode="lines+markers",
         name="Implied, ~30-DTE ATM", line=dict(color="#4c72b0"), marker=dict(size=4),
-        fill="tonexty", fillcolor="rgba(76,114,176,0.12)",
         hovertemplate="%{x}: %{y:.1%}<extra>implied</extra>"))
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["fwd_rv"], mode="lines+markers",
@@ -177,6 +213,10 @@ def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Fig
                        xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
                        font=dict(size=11, color="#555"), xanchor="left")
     fig.update_layout(title=title, **_LAYOUT)
+    # This panel's four legend entries wrap onto two rows under _LAYOUT's above-plot
+    # legend, overlapping the title; put the legend below the plot instead.
+    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.22, x=0),
+                      margin=dict(b=110))
     fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", secondary_y=False)
     fig.update_yaxes(title_text="Spread", tickformat="+.1%", secondary_y=True, showgrid=False)
     first, last = series["date"].iloc[0], series["date"].iloc[-1]
