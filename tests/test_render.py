@@ -362,6 +362,39 @@ class TestParityFigure:
         assert not fig.data and fig.layout.annotations
 
 
+class TestModelVsMarketFigure:
+    def _mvm(self):
+        import datetime as dt
+        rows = []
+        for kind in ("call", "put"):
+            for k, pct, vol, muted in ((740.0, 0.02, 0.002, True), (800.0, 0.35, 0.05, False)):
+                rows.append({"kind": kind, "expiry": dt.date(2026, 9, 25), "dte": 28, "strike": k,
+                             "moneyness": k / 770.0, "market": 10.0, "model": 10.0 * (1 - pct),
+                             "deviation_pct": pct, "deviation_vol": vol, "quoted": True,
+                             "within_spread": muted})
+        return pd.DataFrame(rows)
+
+    def test_eight_layers_toggle_and_visibility(self):
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(self._mvm(), 0.12)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        assert len(heat) == 8
+        assert [t.visible for t in heat] == [True] * 4 + [False] * 4
+        assert {t.xaxis for t in heat} == {"x", "x2"}
+        buttons = fig.layout.updatemenus[0].buttons
+        assert [b.label for b in buttons] == ["% of market price", "Vol points"]
+        assert list(buttons[1].args[0]["visible"]) == [False] * 4 + [True] * 4
+        hot_pct_calls = heat[1]
+        vals = [v for row in hot_pct_calls.z for v in row if v is not None and v == v]
+        assert vals == pytest.approx([0.35])
+
+    def test_empty(self):
+        from src.analytics.model_vs_market import MVM_COLUMNS
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(pd.DataFrame(columns=MVM_COLUMNS), 0.12)
+        assert not fig.data and fig.layout.annotations
+
+
 class TestParityStat:
     def test_quoted_sentence(self):
         from src.render.stats import parity_summary_html

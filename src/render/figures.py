@@ -267,11 +267,16 @@ def _expiry_label(expiry, dte) -> str:
     return f"{expiry.isoformat()} ({int(dte)}d)"
 
 
-def _muted_heatmap_layers(z_all, z_hot, x, y, colorbar_title: str, zmin: float, zmax: float,
+def _muted_heatmap_layers(z_all, z_hot, xcats, y, colorbar_title: str, zmin: float, zmax: float,
                           hovertemplate: str, **subplot) -> list[go.Heatmap]:
     """Two layers: every cell faint, then only the non-muted cells at full
-    opacity with the colorbar — SPEC 3 P7/P9's 'within-spread region muted'."""
-    common = dict(x=x, y=y, colorscale="RdBu", zmid=0, zmin=zmin, zmax=zmax,
+    opacity with the colorbar — SPEC 3 P7/P9's 'within-spread region muted'.
+
+    `xcats` (not `x`) so that `**subplot`'s own `x=` (colorbar x-position,
+    used by P9's two-subplot layout) doesn't collide with the heatmap's
+    x-axis categories parameter.
+    """
+    common = dict(x=xcats, y=y, colorscale="RdBu", zmid=0, zmin=zmin, zmax=zmax,
                   hoverongaps=False, hovertemplate=hovertemplate)
     return [
         go.Heatmap(z=z_all, opacity=0.3, showscale=False, name="within spread", **common),
@@ -307,4 +312,44 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
     fig.update_layout(title=title, **_LAYOUT)
     fig.update_xaxes(title_text="Expiry")
     fig.update_yaxes(title_text="Strike")
+    return fig
+
+
+def build_model_vs_market_figure(mvm: pd.DataFrame, flat_vol: float) -> go.Figure:
+    title = "Model vs market — every contract priced at one flat vol"
+    if mvm.empty:
+        return _empty_figure(title, "No flat ~30-DTE ATM vol to price the chain with")
+    title += f" ({flat_vol:.1%})"
+    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.14,
+                        subplot_titles=("Calls", "Puts"))
+    metrics = [("deviation_pct", "% of market price", 1.0, "%{z:+.0%}"),
+               ("deviation_vol", "Vol points", 0.20, "%{z:+.1%}")]
+    for mi, (col, cb_title, lim, fmt) in enumerate(metrics):
+        for ci, kind in enumerate(("call", "put"), start=1):
+            g = mvm[mvm["kind"] == kind].copy()
+            g["label"] = [_expiry_label(e, d) for e, d in zip(g["expiry"], g["dte"])]
+            order = g[["label", "dte"]].drop_duplicates().sort_values("dte")["label"].tolist()
+            z_all = g.pivot(index="strike", columns="label", values=col).reindex(columns=order)
+            z_hot = (g.assign(hot=g[col].where(~g["within_spread"]))
+                       .pivot(index="strike", columns="label", values="hot").reindex(columns=order))
+            layers = _muted_heatmap_layers(
+                z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order,
+                z_all.index.tolist(), cb_title, -lim, lim,
+                "%{x}<br>K %{y}: " + fmt + "<extra>" + kind + "</extra>",
+                x=1.02 if ci == 2 else 0.46, len=0.9)
+            for layer in layers:
+                layer.visible = (mi == 0)
+                fig.add_trace(layer, row=1, col=ci)
+    vis_pct = [True] * 4 + [False] * 4
+    vis_vol = [False] * 4 + [True] * 4
+    fig.update_layout(
+        title=title, **_LAYOUT,
+        updatemenus=[dict(type="buttons", direction="left", x=0.0, y=1.14, xanchor="left",
+                          yanchor="bottom", showactive=True,
+                          buttons=[dict(label="% of market price", method="update",
+                                        args=[{"visible": vis_pct}]),
+                                   dict(label="Vol points", method="update",
+                                        args=[{"visible": vis_vol}])])])
+    fig.update_xaxes(title_text="Expiry")
+    fig.update_yaxes(title_text="Strike", row=1, col=1)
     return fig
