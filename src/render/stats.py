@@ -1,6 +1,8 @@
 """Stat sentences that sit above a panel (the P5 one lives in analytics.iv_rv)."""
 import math
 
+import numpy as np
+
 
 def _carry_clause(carry: dict | None, r: float, q: float) -> str:
     """The implied-carry sentence: the median, its range, and the tenor span.
@@ -103,3 +105,43 @@ def parity_summary_html(summary: dict, carry: dict | None,
                  "fifteen minutes after the stock's")
     text += "."
     return text + _carry_clause(carry, r, q) + "</p>"
+
+
+_SIM_LABEL = ("Simulation for learning — a hypothetical short straddle sold at the "
+              "mid, delta-hedged once a day on one share. Not a real position, not advice.")
+
+
+def hedge_summary_html(summary: dict) -> str:
+    """The P8 stat line. Never describes a slope the sample cannot support."""
+    if summary["n_trades"] == 0:
+        return (f"<p class='stat'>No simulated trade yet — the first opens on the first "
+                f"stored session of a month.</p><p class='caption'>{_SIM_LABEL}</p>")
+
+    since = summary["first_entry"].isoformat()
+    money = f"${summary['cum_pnl']:,.2f}" if np.isfinite(summary["cum_pnl"]) else "n/a"
+    head = (f"{summary['n_trades']} simulated trade"
+            f"{'s' if summary['n_trades'] != 1 else ''} since {since}: "
+            f"cumulative P&L {money} over {summary['n_days']} sessions")
+
+    n = summary["n_settled"]
+    if n == 0:
+        when = summary["next_settlement"]
+        tail = ("; none has reached expiry yet, so the P&L-vs-edge scatter is still empty"
+                + (f" — the first settles {when.isoformat()}" if when is not None else ""))
+    elif n == 1:
+        tail = "; exactly one trade has settled — one round trip, not a relationship"
+    elif n < 5:
+        tail = (f"; {n} trades have settled — too few to read a line through, "
+                "so the fit is drawn but not claimed")
+    else:
+        tail = (f"; across {n} settled trades the fit is ${summary['slope']:.2f} of P&L "
+                f"per vol point of edge (R² {summary['r2']:.2f})")
+
+    share = summary.get("market_mark_share", float("nan"))
+    if np.isfinite(share) and share < 0.999:
+        tail += (f". {1 - share:.0%} of daily marks are our own model, not a quote — "
+                 "an expiry drops out of the stored chain in its final week")
+    if summary["n_sparse"]:
+        tail += (f". {summary['n_sparse']} trade(s) are excluded from the scatter for "
+                 "having too few market marks")
+    return f"<p class='stat'>{head}{tail}.</p><p class='caption'>{_SIM_LABEL}</p>"

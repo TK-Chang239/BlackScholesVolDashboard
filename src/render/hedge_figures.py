@@ -1,6 +1,5 @@
-"""P8 figures: cumulative P&L and the daily P&L histogram.
+"""P8 figures: cumulative P&L, the daily P&L histogram, and the P&L-vs-edge scatter.
 
-The P&L-vs-edge scatter, the third P8 figure, arrives in a later task.
 Kept out of figures.py so neither file has to hold every panel on the page.
 All money is per share: the simulation sells ONE option on ONE share.
 """
@@ -61,4 +60,50 @@ def build_hedge_histogram_figure(port: pd.DataFrame) -> go.Figure:
     fig.update_layout(title="Daily hedged P&L — distribution", showlegend=False, **LAYOUT)
     fig.update_xaxes(title_text=_PNL_AXIS)
     fig.update_yaxes(title_text="Sessions")
+    return fig
+
+
+def build_hedge_scatter_figure(trades: pd.DataFrame, fit: dict,
+                               next_settlement=None) -> go.Figure:
+    """The money chart: round-trip P&L against the edge the trade was sold at.
+
+    x is in VOL POINTS (edge * 100) to match P6 and P9; y is dollars per share.
+    Only settled trades appear -- an open trade has no round-trip P&L and no
+    lifetime realized vol yet.
+    """
+    title = "Per-trade P&L vs (entry IV − realized vol)"
+    settled = (trades[(trades["status"] == "settled") & trades["edge"].notna()]
+               if not trades.empty else trades)
+    if settled.empty:
+        when = (f" The first settles {next_settlement.isoformat()}."
+                if next_settlement is not None else "")
+        return empty_figure(title, "No simulated trade has reached expiry yet." + when)
+
+    x = settled["edge"].to_numpy(dtype=float) * 100.0
+    y = settled["pnl"].to_numpy(dtype=float)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode="markers+text", name="Settled trades",
+        text=[d.strftime("%b %Y") for d in settled["entry_date"]],
+        textposition="top center", textfont=dict(size=10, color="#666"),
+        marker=dict(size=11, color="#2b6cb0", line=dict(width=1, color="white")),
+        customdata=np.column_stack([settled["entry_iv"] * 100, settled["lifetime_rv"] * 100]),
+        hovertemplate=("%{text}<br>entry IV %{customdata[0]:.1f} vs realized "
+                       "%{customdata[1]:.1f} vol pts<br>P&L $%{y:.2f}<extra></extra>")))
+    if np.isfinite(fit.get("slope", np.nan)):
+        xs = np.array([x.min(), x.max()])
+        fig.add_trace(go.Scatter(
+            x=xs, y=fit["slope"] * xs + fit["intercept"], mode="lines",
+            name="Least-squares fit", line=dict(width=2, color="#c05621", dash="dash"),
+            hoverinfo="skip"))
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.02, y=0.98, xanchor="left", yanchor="top",
+            showarrow=False, align="left", font=dict(size=12, color="#444"),
+            text=(f"slope ${fit['slope']:.2f} per vol point · R² {fit['r2']:.2f} "
+                  f"· {fit['n']} trades"))
+    fig.add_hline(y=0, line=dict(width=1, color="#999", dash="dot"))
+    fig.add_vline(x=0, line=dict(width=1, color="#999", dash="dot"))
+    fig.update_layout(title=title, **LAYOUT)
+    fig.update_xaxes(title_text="Entry IV − realized vol over the trade's life (vol points)")
+    fig.update_yaxes(title_text=_PNL_AXIS)
     return fig

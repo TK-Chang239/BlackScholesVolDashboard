@@ -816,3 +816,112 @@ class TestHedgeFigures:
                             "pnl_cum": [0.0], "n_open": [1]})
         fig = build_hedge_histogram_figure(one)
         assert len(fig.data) == 0
+
+
+class TestHedgeScatterAndStat:
+    def _settled(self, n=4):
+        import datetime as dt
+        return pd.DataFrame({
+            "entry_date": [dt.date(2026, m, 1) for m in range(3, 3 + n)],
+            "expiry": [dt.date(2026, m + 1, 17) for m in range(3, 3 + n)],
+            "strike": [100.0] * n, "dte_at_entry": [30] * n,
+            "entry_iv": [0.20] * n, "entry_straddle": [6.0] * n,
+            "exit_date": [dt.date(2026, m + 1, 17) for m in range(3, 3 + n)],
+            "exit_value": [4.0] * n, "pnl": [1.0, 2.0, 3.0, 4.0][:n],
+            "n_days": [30] * n, "n_market_marks": [27] * n, "n_model_marks": [3] * n,
+            "market_mark_share": [0.9] * n,
+            "lifetime_rv": [0.19, 0.18, 0.17, 0.16][:n],
+            "edge": [0.01, 0.02, 0.03, 0.04][:n], "status": ["settled"] * n,
+        })
+
+    def test_scatter_is_in_vol_points_and_draws_the_fit(self):
+        from src.analytics.hedge_sim import fit_pnl_vs_edge
+        from src.render.hedge_figures import build_hedge_scatter_figure
+        trades = self._settled()
+        fit = fit_pnl_vs_edge(trades)
+        fig = build_hedge_scatter_figure(trades, fit)
+        pts = [t for t in fig.data if t.mode and "markers" in t.mode]
+        assert len(pts) == 1
+        assert list(pts[0].x) == pytest.approx([1.0, 2.0, 3.0, 4.0])   # vol POINTS
+        assert list(pts[0].y) == pytest.approx([1.0, 2.0, 3.0, 4.0])
+        assert any(t.mode == "lines" for t in fig.data)     # the regression line
+        text = " ".join(a.text for a in fig.layout.annotations)
+        assert "slope" in text.lower() and "vol point" in text.lower()
+        assert "vol point" in fig.layout.xaxis.title.text.lower()
+
+    def test_scatter_omits_open_trades(self):
+        import datetime as dt
+        from src.render.hedge_figures import build_hedge_scatter_figure
+        trades = self._settled()
+        trades.loc[3, "status"] = "open"
+        fig = build_hedge_scatter_figure(trades, {"n": 3, "slope": 1.0,
+                                                  "intercept": 0.0, "r2": 1.0})
+        pts = [t for t in fig.data if t.mode and "markers" in t.mode][0]
+        assert len(pts.x) == 3
+
+    def test_scatter_empty_state_names_the_next_settlement(self):
+        import datetime as dt
+        from src.render.hedge_figures import build_hedge_scatter_figure
+        fig = build_hedge_scatter_figure(
+            pd.DataFrame(columns=["edge", "pnl", "status", "entry_date"]),
+            {"n": 0, "slope": float("nan"), "intercept": float("nan"), "r2": float("nan")},
+            next_settlement=dt.date(2026, 9, 18))
+        assert len(fig.data) == 0
+        assert "2026-09-18" in fig.layout.annotations[0].text
+
+    def test_scatter_with_one_point_draws_no_line(self):
+        from src.render.hedge_figures import build_hedge_scatter_figure
+        trades = self._settled(n=1)
+        fig = build_hedge_scatter_figure(trades, {"n": 1, "slope": float("nan"),
+                                                  "intercept": float("nan"),
+                                                  "r2": float("nan")})
+        assert not any(t.mode == "lines" for t in fig.data)
+
+
+class TestHedgeSummaryHtml:
+    def _summary(self, **over):
+        import datetime as dt
+        base = {"n_trades": 1, "n_settled": 0, "n_open": 1, "n_sparse": 0,
+                "first_entry": dt.date(2026, 8, 14), "last_mark": dt.date(2026, 8, 28),
+                "cum_pnl": 1.25, "n_days": 11, "mean_daily_pnl": 0.12,
+                "sd_daily_pnl": 0.4, "market_mark_share": 1.0,
+                "next_settlement": dt.date(2026, 9, 18),
+                "slope": float("nan"), "r2": float("nan")}
+        return {**base, **over}
+
+    def test_labels_the_panel_as_a_simulation(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary())
+        assert "simulation" in html.lower()
+        assert "class='stat'" in html
+
+    def test_no_settled_trade_says_so_and_names_the_date(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary())
+        assert "2026-09-18" in html
+        assert "slope" not in html.lower()
+
+    def test_one_settled_trade_is_not_called_a_relationship(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_settled=1, n_open=0, slope=3.1, r2=1.0))
+        assert "one" in html.lower() or "1 " in html
+        assert "slope" not in html.lower()
+
+    def test_enough_trades_reports_the_slope(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=6, n_settled=6, n_open=0,
+                                                slope=2.4, r2=0.71))
+        assert "2.4" in html and "vol point" in html.lower()
+        assert "0.71" in html or "71" in html
+
+    def test_no_trades_at_all(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=0, n_open=0, n_days=0,
+                                                first_entry=None, next_settlement=None,
+                                                cum_pnl=float("nan")))
+        assert "no simulated trade" in html.lower()
+
+    def test_model_marked_share_is_disclosed_when_material(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(market_mark_share=0.82))
+        assert "18%" in html or "82%" in html
