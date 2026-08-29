@@ -1,0 +1,6 @@
+# P6 skew-series annotations (SPEC 3 P6). One entry per notable day; adding a
+# note is a one-line commit. Dates are market sessions (YYYY-MM-DD).
+#
+#   - {date: 2026-09-17, note: FOMC decision}
+#
+annotations: []

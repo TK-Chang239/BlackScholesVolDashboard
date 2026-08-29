@@ -286,3 +286,454 @@ class TestPagePhase4:
         html = render_page(self._figs(), self._status())
         for pid in ("P1", "P2", "P3", "P4", "P5"):
             assert CAPTIONS[pid] in html
+
+    def test_phase5_panels_and_sections(self):
+        import plotly.graph_objects as go
+        from src.render.page import CAPTIONS, render_page
+        figs = {p: go.Figure() for p in ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P9")}
+        html = render_page(figs, self._status())
+        q2, q3, q5 = html.index("<h2>Q2."), html.index("<h2>Q3."), html.index("<h2>Q5.")
+        assert q2 < html.index("25-delta skew") < html.index("Model-vs-market") < q3
+        assert q5 < html.index("Put-call parity checker")
+        assert "arrives in Phase 5" not in html
+        for pid in ("P6", "P7", "P9"):
+            assert CAPTIONS[pid] in html
+
+    def test_p7_caption_states_the_bound_and_its_limits_honestly(self):
+        from src.render.page import CAPTIONS
+        cap = CAPTIONS["P7"]
+        # the muted population is put-rich gaps, not "deep in-the-money puts"
+        assert "in-the-money puts often show" not in cap
+        # the code tests |gap| <= bound + spread, so the caption must say so
+        assert "K·(1 − e⁻ʳᵀ) − S·(1 − e⁻ᵠᵀ) plus the combined bid–ask" in cap
+        # the rigorous ceiling is K(1 - e^-rT); the bound we use is that less the
+        # forgone dividends, so it may not claim to rule early exercise out
+        assert "no matter how the option is modelled" not in cap
+        assert "interest earned on the strike" in cap
+        assert "less the dividends forgone" in cap
+        # only an in-the-money put can be exercised early for value (the gate)
+        assert "in-the-money put" in cap
+        # and the calibration's own blind spot is disclosed
+        assert "level error" in cap
+
+    def test_p7_caption_calls_the_muting_consistency_not_proof(self):
+        from src.render.page import CAPTIONS
+        cap = CAPTIONS["P7"]
+        # a gap inside the bound is CONSISTENT WITH early exercise; a stale mark
+        # of the same size fits the bound just as well and is not arbitrage either
+        assert "consistent with early exercise" in cap
+        assert "not proof" in cap
+        assert "stale mark" in cap
+        assert "are still not arbitrage" not in cap
+
+
+class TestSkewFigure:
+    def _metrics(self, dates, skews):
+        return pd.DataFrame({"date": dates, "skew_25d": skews,
+                             "skew_25d_dte": [30.0] * len(dates)})
+
+    def test_vol_points_and_annotation_match(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        d = [dt.date(2026, 8, 24) + dt.timedelta(days=i) for i in range(4)]
+        m = self._metrics(d, [0.030, 0.032, 0.045, 0.031])
+        ann = pd.DataFrame({"date": [d[2], dt.date(2026, 1, 1)], "note": ["risk-off", "absent"]})
+        fig = build_skew_figure(m, ann)
+        trace = [t for t in fig.data if "skew" in (t.name or "").lower()][0]
+        assert max(v for v in trace.y if v == v) == pytest.approx(4.5)
+        texts = [a.text for a in fig.layout.annotations]
+        assert "risk-off" in texts and "absent" not in texts
+
+    def test_gap_breaks_and_recent_range(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        d = [dt.date(2024, 9, 3)] + [dt.date(2026, 8, 24) + dt.timedelta(days=i) for i in range(3)]
+        fig = build_skew_figure(self._metrics(d, [0.02, 0.03, 0.03, 0.03]),
+                                pd.DataFrame(columns=["date", "note"]))
+        trace = [t for t in fig.data if "skew" in (t.name or "").lower()][0]
+        assert any(v is None or v != v for v in trace.y)
+        assert fig.layout.xaxis.range is not None
+
+    def test_all_nan_is_empty_figure(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        m = self._metrics([dt.date(2026, 8, 24)], [float("nan")])
+        fig = build_skew_figure(m, pd.DataFrame(columns=["date", "note"]))
+        assert not fig.data and fig.layout.annotations
+
+
+class TestParityFigure:
+    def _parity(self, quoted=True, cells=None):
+        import datetime as dt
+        e1, e2 = dt.date(2026, 9, 25), dt.date(2026, 11, 20)
+        cells = cells or ((740.0, 0.02, False), (770.0, -0.01, False), (800.0, 0.9, True))
+        rows = []
+        for expiry, dte in ((e1, 28), (e2, 84)):
+            for k, dev, viol in cells:
+                rows.append({"expiry": expiry, "dte": dte, "strike": k, "moneyness": k / 770.0,
+                             "call_price": 10.0, "put_price": 9.0,
+                             "call_oi": 500.0, "put_oi": 500.0, "liquid": True,
+                             "lhs": 1.0, "rhs": 1.0 - dev,
+                             "deviation": dev, "forward": 772.0, "deviation_fwd": dev,
+                             "spread": 0.3 if quoted else float("nan"),
+                             "tradeable_violation": viol if quoted else False,
+                             "tradeable_violation_fwd": viol if quoted else False})
+        return pd.DataFrame(rows)
+
+    def test_two_layers_and_hot_cells(self):
+        from src.render.figures import build_parity_figure
+        fig = build_parity_figure(self._parity(), 770.0)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        assert len(heat) == 2
+        faint, hot = heat
+        assert faint.opacity == 0.3 and faint.showscale is False and hot.showscale is True
+        # the hot layer is liquid AND beyond spread AND unaccounted for
+        assert hot.name == "unexplained"
+        # ...and the faint layer carries EVERY cell -- within-spread, illiquid,
+        # early-exercise-explained and the hot ones -- so it cannot be called
+        # "within spread"
+        assert faint.name == "all pairs"
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9, 0.9])
+        assert list(faint.x) == ["2026-09-25 (28d)", "2026-11-20 (84d)"]
+        assert not any("spreads unknown" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_close_based_is_annotated_and_nothing_hot(self):
+        from src.render.figures import build_parity_figure
+        fig = build_parity_figure(self._parity(quoted=False), 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        assert all(v is None or v != v for row in hot.z for v in row)
+        assert any("spreads unknown" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_outlier_does_not_flatten_the_scale(self):
+        from src.render.figures import build_parity_figure
+        # 60 cells and TWO dead quotes: at n = 6 `method="lower"` discards exactly
+        # the maximum whatever the percentile, so a small fixture would pass this
+        # without ever exercising the 98th-percentile rule the test is named for.
+        cells = [(600.0 + 5.0 * i, 0.02 + 0.03 * (i % 8), (i % 8) == 7) for i in range(30)]
+        p = self._parity(cells=cells)
+        assert len(p) == 60
+        p.loc[p.index[:2], ["deviation", "deviation_fwd"]] = 160.0
+        fig = build_parity_figure(p, 770.0)
+        faint = [t for t in fig.data if t.type == "heatmap"][0]
+        assert faint.zmax < 20.0        # scale set by the bulk, not the outliers
+        assert faint.zmax == pytest.approx(0.23)     # the largest genuine cell
+
+    def test_non_liquid_violation_is_not_hot(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["liquid"] = False
+        fig = build_parity_figure(p, 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        assert all(v is None or v != v for row in hot.z for v in row)
+
+    def test_falls_back_to_spot_based_deviation_when_no_forward(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["deviation_fwd"] = float("nan")
+        p["forward"] = float("nan")
+        p["tradeable_violation_fwd"] = False
+        fig = build_parity_figure(p, 770.0)
+        assert "implied forward" not in fig.layout.title.text
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9, 0.9])
+
+    def test_early_exercise_explained_violation_is_muted(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["early_exercise_bound"] = 5.0
+        # the 28-day violation is inside the bound; the 84-day one is not
+        p["early_exercise_explained"] = p["tradeable_violation_fwd"] & (p["dte"] == 28)
+        fig = build_parity_figure(p, 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9])          # only the unexplained one stays hot
+        assert any("early-exercise bound" in (a.text or "") for a in fig.layout.annotations)
+        assert any("1 put-rich gap" in (a.text or "") for a in fig.layout.annotations)
+        # the bound says the gap is CONSISTENT WITH early exercise, not that it
+        # is early exercise -- a stale mark inside the bound is not arbitrage either
+        note = [a.text for a in fig.layout.annotations if "early-exercise" in (a.text or "")][0]
+        assert "consistent with the American early-exercise bound" in note
+        assert "not arbitrage" not in note
+
+    def test_early_exercise_annotation_sits_above_the_plot_area(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["early_exercise_bound"] = 5.0
+        p["early_exercise_explained"] = p["tradeable_violation_fwd"] & (p["dte"] == 28)
+        fig = build_parity_figure(p, 770.0)
+        ann = [a for a in fig.layout.annotations if "early-exercise" in (a.text or "")][0]
+        assert ann.xref == "paper" and ann.yref == "paper"
+        assert ann.xanchor == "left" and ann.x == 0.0
+        # above the top row of cells, not on top of them
+        assert ann.y >= 1.02 and ann.yanchor == "bottom"
+        assert fig.layout.margin.t >= 110       # room for it under the title
+
+    def test_close_based_annotation_also_sits_above_the_plot_area(self):
+        from src.render.figures import build_parity_figure
+        fig = build_parity_figure(self._parity(quoted=False), 770.0)
+        ann = [a for a in fig.layout.annotations if "spreads unknown" in (a.text or "")][0]
+        assert ann.yref == "paper" and ann.y >= 1.02 and ann.yanchor == "bottom"
+
+    def test_no_early_exercise_annotation_when_nothing_is_explained(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["early_exercise_bound"] = 5.0
+        p["early_exercise_explained"] = False
+        fig = build_parity_figure(p, 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9, 0.9])
+        assert not any("early-exercise" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_colour_limit_is_set_by_liquid_cells_only(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        dead = p.iloc[[0, 0, 0]].copy()          # three strikes nobody holds...
+        dead["strike"] = [600.0, 620.0, 640.0]
+        dead[["deviation", "deviation_fwd"]] = 160.0     # ...quoted at nonsense
+        dead["liquid"] = False
+        fig = build_parity_figure(pd.concat([p, dead], ignore_index=True), 770.0)
+        faint = [t for t in fig.data if t.type == "heatmap"][0]
+        assert faint.zmax == pytest.approx(0.9)          # set by the liquid bulk
+        assert faint.zmin == pytest.approx(-0.9)
+
+    def test_empty(self):
+        from src.analytics.parity import PARITY_COLUMNS
+        from src.render.figures import build_parity_figure
+        fig = build_parity_figure(pd.DataFrame(columns=PARITY_COLUMNS), 770.0)
+        assert not fig.data and fig.layout.annotations
+
+
+class TestModelVsMarketFigure:
+    def _mvm(self):
+        import datetime as dt
+        rows = []
+        for kind in ("call", "put"):
+            for k, pct, vol, muted in ((740.0, 0.02, 0.002, True), (800.0, 0.35, 0.05, False)):
+                rows.append({"kind": kind, "expiry": dt.date(2026, 9, 25), "dte": 28, "strike": k,
+                             "moneyness": k / 770.0, "market": 10.0, "model": 10.0 * (1 - pct),
+                             "deviation_pct": pct, "deviation_vol": vol, "quoted": True,
+                             "within_spread": muted})
+        return pd.DataFrame(rows)
+
+    def test_eight_layers_toggle_and_visibility(self):
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(self._mvm(), 0.12)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        assert len(heat) == 8
+        assert [t.visible for t in heat] == [True] * 4 + [False] * 4
+        assert {t.xaxis for t in heat} == {"x", "x2"}
+        buttons = fig.layout.updatemenus[0].buttons
+        assert [b.label for b in buttons] == ["% of market price", "Vol points"]
+        assert list(buttons[1].args[0]["visible"]) == [False] * 4 + [True] * 4
+        hot_pct_calls = heat[1]
+        vals = [v for row in hot_pct_calls.z for v in row if v is not None and v == v]
+        assert vals == pytest.approx([0.35])
+        assert [t.name for t in heat[:2]] == ["within spread", "beyond spread"]
+
+    def test_one_colorbar_per_metric_and_it_clears_the_puts_subplot(self):
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(self._mvm(), 0.12)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        shown = [t for t in heat if t.showscale]
+        # both subplots of a metric share zmin/zmax, so one colorbar suffices --
+        # and it lives to the right of the Puts subplot, not inside it
+        assert len(shown) == 2
+        assert all(t.xaxis == "x2" for t in shown)
+        assert all(t.colorbar.x >= 1.0 for t in shown)
+        assert [heat.index(t) for t in shown] == [3, 7]
+        # the toggle still swaps exactly four traces for four
+        assert len(heat) == 8
+        assert [t.visible for t in heat] == [True] * 4 + [False] * 4
+        buttons = fig.layout.updatemenus[0].buttons
+        assert list(buttons[0].args[0]["visible"]) == [True] * 4 + [False] * 4
+        assert list(buttons[1].args[0]["visible"]) == [False] * 4 + [True] * 4
+
+    def test_vol_point_layer_is_plotted_in_vol_points(self):
+        # `deviation_vol` is a FRACTION. P6 one section above multiplies it by 100
+        # and hovers "+4.0 vol pts"; this panel must mean the same thing by a vol
+        # point, and its colorbar says "Vol points" -- so the z values, the scale
+        # and the hover all have to be in vol points too.
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(self._mvm(), 0.12)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        vol_faint, vol_hot = heat[4], heat[5]        # calls, vol-point metric
+        vals = sorted(v for row in vol_faint.z for v in row if v is not None and v == v)
+        assert vals == pytest.approx([0.2, 5.0])     # 0.002 and 0.05 as vol points
+        hot_vals = [v for row in vol_hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([5.0])
+        assert (vol_faint.zmin, vol_faint.zmax) == (-20, 20)
+        assert "%{z:+.1f} vol pts" in vol_hot.hovertemplate
+        assert "%{z:+.1%}" not in vol_hot.hovertemplate
+        assert heat[7].colorbar.title.text == "Vol points"
+        # ...and the toggle still swaps exactly four visible traces for four
+        assert len(heat) == 8
+        assert [t.visible for t in heat] == [True] * 4 + [False] * 4
+        buttons = fig.layout.updatemenus[0].buttons
+        assert list(buttons[1].args[0]["visible"]) == [False] * 4 + [True] * 4
+
+    def test_percent_metric_is_untouched_by_the_vol_point_scaling(self):
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(self._mvm(), 0.12)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        vals = sorted(v for row in heat[0].z for v in row if v is not None and v == v)
+        assert vals == pytest.approx([0.02, 0.35])   # still fractions of market price
+        assert (heat[0].zmin, heat[0].zmax) == (-1.0, 1.0)
+        assert "%{z:+.0%}" in heat[1].hovertemplate
+
+    def test_empty(self):
+        from src.analytics.model_vs_market import MVM_COLUMNS
+        from src.render.figures import build_model_vs_market_figure
+        fig = build_model_vs_market_figure(pd.DataFrame(columns=MVM_COLUMNS), 0.12)
+        assert not fig.data and fig.layout.annotations
+
+
+class TestParityStat:
+    def _summary(self, **over):
+        s = {"n_pairs": 420, "n_quoted": 420, "n_liquid": 400,
+             "n_tradeable_violations": 132, "n_tradeable_violations_fwd": 3,
+             "n_violations_early_exercise": 2, "n_violations_unexplained": 1,
+             "share_within_spread": 0.6857, "share_within_spread_fwd": 0.9929,
+             "max_abs_deviation": 160.28, "max_abs_deviation_fwd": 1.42}
+        s.update(over)
+        return s
+
+    def _carry(self, **over):
+        c = {"implied_carry": 0.02864, "dte_min": 84.0, "dte_max": 203.0,
+             "carry_lo": 0.02827, "carry_hi": 0.03232, "n_expiries": 4}
+        c.update(over)
+        return c
+
+    def _one_expiry_carry(self, value=0.0281, dte=84.0):
+        return {"implied_carry": value, "dte_min": dte, "dte_max": dte,
+                "carry_lo": value, "carry_hi": value, "n_expiries": 1}
+
+    def _no_carry(self):
+        return {"implied_carry": float("nan"), "dte_min": float("nan"),
+                "dte_max": float("nan"), "carry_lo": float("nan"),
+                "carry_hi": float("nan"), "n_expiries": 0}
+
+    def test_quoted_sentence_leads_with_the_unexplained_count(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._summary(), self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "400 liquid" in html
+        assert "1 unexplained tradeable violation" in html
+        assert "2 more put-rich gaps" in html and "early-exercise bound" in html
+        assert "not arbitrage" in html
+        assert "in-the-money" not in html          # the ITM gate makes the count exact,
+                                                   # but the page still need not claim it
+        # the calibrated total and the raw spot-based number stay visible
+        assert "3 tradeable violations" in html
+        assert "99.3%" in html and "forward is calibrated" in html
+        assert "132" in html and "420" in html
+        assert "2.81%" in html and "2.85%" in html and "84-day" in html
+
+    def test_lead_publishes_the_unexplained_share_of_liquid_pairs(self):
+        # the reader should not have to divide 4 by 400 themselves
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._summary(n_violations_unexplained=4),
+                                   self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "4 unexplained tradeable violations (1.0% of liquid pairs)" in html
+        html2 = parity_summary_html(self._summary(n_liquid=200, n_violations_unexplained=1),
+                                    self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "1 unexplained tradeable violation (0.5% of liquid pairs)" in html2
+
+    def test_no_early_exercise_clause_when_none_are_explained(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(
+            self._summary(n_violations_early_exercise=0, n_violations_unexplained=3),
+            self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "3 unexplained tradeable violations" in html
+        assert "early-exercise" not in html and "0 more" not in html
+
+    def test_singular_violation_and_missing_share(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(
+            self._summary(n_tradeable_violations_fwd=1, n_tradeable_violations=1,
+                          n_violations_early_exercise=0, n_violations_unexplained=1,
+                          n_liquid=1, share_within_spread_fwd=float("nan")),
+            self._no_carry(), 0.0383, 0.0098)
+        assert "1 tradeable violation " in html and "nan" not in html.lower()
+        assert "carry" not in html.lower()
+
+    def test_no_liquid_pairs_refuses_to_publish_a_zero_all_clear(self):
+        # A1: with no open interest anywhere on the frame, every liquidity-gated
+        # count is zero by construction. Printing them is a false all-clear.
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(
+            self._summary(n_liquid=0, n_tradeable_violations_fwd=0,
+                          n_violations_early_exercise=0, n_violations_unexplained=0,
+                          share_within_spread_fwd=float("nan")),
+            self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "0 liquid" not in html and "0 unexplained" not in html
+        assert "0 tradeable violations" not in html
+        assert "open interest" in html
+        assert "liquidity could not be assessed" in html
+        # the spot-derived comparison is not liquidity-gated, so it survives
+        assert "132 of 420 quoted pairs exceed the spread" in html
+        assert "2.81%" in html                     # and so does the carry
+        assert "nan" not in html.lower()
+
+    def _close_based(self, **over):
+        s = self._summary(n_quoted=0, n_tradeable_violations=0, n_tradeable_violations_fwd=0,
+                          n_violations_early_exercise=0, n_violations_unexplained=0,
+                          share_within_spread=float("nan"),
+                          share_within_spread_fwd=float("nan"))
+        s.update(over)
+        return s
+
+    def test_close_based_sentence_describes_what_the_figure_actually_plots(self):
+        # `build_parity_figure` titles a close-based frame "against the market's
+        # own implied forward" too, so the stat line must not say "raw".
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._close_based(), self._no_carry(), 0.0383, 0.0098)
+        assert "spreads unknown, so tradeability cannot be assessed" in html
+        assert "market-implied forward" in html
+        assert "raw deviations only" not in html
+        assert "carry" not in html.lower()
+
+    def test_close_based_without_a_calibrated_forward_says_raw(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._close_based(max_abs_deviation_fwd=float("nan")),
+                                   self._no_carry(), 0.0383, 0.0098)
+        assert "raw deviations only" in html and "nan" not in html.lower()
+
+    def test_stale_spot_claim_only_when_the_calibration_removed_most_of_them(self):
+        from src.render.stats import parity_summary_html
+        # 132 -> 3 is a collapse, and the causal story is earned
+        assert "stale-spot artefact" in parity_summary_html(
+            self._summary(), self._one_expiry_carry(), 0.0383, 0.0098)
+        # 132 -> 100 is not
+        html = parity_summary_html(self._summary(n_tradeable_violations_fwd=100),
+                                   self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "stale-spot" not in html and "fifteen minutes" not in html
+        assert "132 of 420 quoted pairs exceed the spread" in html
+        # and neither is a handful of raw violations
+        html = parity_summary_html(self._summary(n_tradeable_violations=4),
+                                   self._one_expiry_carry(), 0.0383, 0.0098)
+        assert "stale-spot" not in html
+        assert "4 of 420 quoted pairs exceed the spread" in html
+
+    def test_carry_sentence_prints_the_median_the_range_and_the_span(self):
+        # A3: showing the whole set is what makes this honest rather than
+        # flattering -- the median alone would hide a 40 bp disagreement.
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._summary(), self._carry(), 0.0383, 0.0098)
+        assert "ATM implied carry across the 84\u2013203-day expiries" in html
+        assert "median 2.86%" in html
+        assert "range 2.83\u20133.23%" in html
+        assert "vs our r \u2212 q = 2.85%" in html
+
+    def test_carry_sentence_names_the_expiry_when_only_one_qualifies(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(self._summary(),
+                                   self._one_expiry_carry(0.0281, 28.0), 0.0383, 0.0098)
+        assert "ATM implied carry at the 28-day expiry: 2.81%" in html
+        assert "range" not in html and "median" not in html
+
+    def test_no_pairs(self):
+        from src.render.stats import parity_summary_html
+        s = self._summary(n_pairs=0, n_quoted=0, n_liquid=0)
+        assert "No strike" in parity_summary_html(s, self._no_carry(), 0.04, 0.01)

@@ -62,19 +62,63 @@ CAPTIONS = {
         "sellers are being paid a premium for bearing variance risk; that "
         "premium, not forecasting skill, is what the gap usually measures."
     ),
+    "P6": (
+        "The 25-delta skew is the price of crash insurance in one number: the "
+        "implied vol of a put that pays off on a roughly one-in-four down-move, "
+        "minus that of the mirror-image call, at the ~30-day expiry — interpolated "
+        "in delta space from this project's own Greeks. Black-Scholes says it "
+        "should be zero. For equity indices it almost never is, and it jumps on "
+        "risk-off days; the annotations mark the ones we have noted."
+    ),
+    "P7": (
+        "Put-call parity is the one relationship here that needs no model at all: "
+        "a call minus a put must equal a forward, or there is a free lunch. Cells "
+        "show the dollar gap between the two sides, measured against each expiry's "
+        "own market-implied forward — the median of what every near-the-money "
+        "strike's own C − P implies, so a stale close on the underlying cannot "
+        "masquerade as an arbitrage. That calibration costs something worth "
+        "naming: a pure level error at the money is absorbed into the forward "
+        "and can no longer register here, so what is left under test is whether "
+        "the rest of the strike ladder is the right straight line through that "
+        "point. Anything smaller than the combined bid–ask spread, or on a "
+        "strike where one leg has no open interest, is muted because it cannot be "
+        "traded. Put-rich gaps often survive that are not evidence of arbitrage "
+        "either — SPY options are American, and early exercise makes European "
+        "parity only approximate for an in-the-money put — so those are muted too, "
+        "whenever the gap fits inside K·(1 − e⁻ʳᵀ) − S·(1 − e⁻ᵠᵀ) plus the combined "
+        "bid–ask: the interest earned on the strike over the option's remaining "
+        "life, less the dividends forgone by giving up the stock. That is tighter "
+        "than the rigorous ceiling on early exercise, K·(1 − e⁻ʳᵀ), so it explains "
+        "away less than it could. Muting there is a claim about consistency, not "
+        "proof: a gap inside the bound is consistent with early exercise, but a "
+        "stale mark of the same size fits the bound just as comfortably, and the "
+        "bound cannot tell them apart. Only what survives every test is left "
+        "burning. This "
+        "model-free check is why desks trust Black-Scholes "
+        "as a quoting convention even when they distrust it as a forecast."
+    ),
+    "P9": (
+        "Price every contract with one flat volatility — today's ~30-day "
+        "at-the-money implied vol — and compare to the market. The error is not "
+        "noise: the wings are systematically rich against the flat-vol model, on "
+        "both sides, day after day. A structured error means the world has a "
+        "feature the model lacks (fat tails, volatility that moves), which is "
+        "exactly why Heston and SABR exist. This is the smile of the panel above, "
+        "re-expressed in price."
+    ),
 }
 
 QUESTIONS = [
     ("Q1", "Everyone has the same formula. Why does anyone disagree about prices?",
      ["P1", "P4"], ""),
     ("Q2", "Where does the market ignore the model, and why?",
-     ["P2", "P3"], "Model-vs-market heatmap arrives in Phase 5."),
+     ["P2", "P3", "P6", "P9"], ""),
     ("Q3", "Is implied volatility a prediction, or a price?",
      ["P5"], ""),
     ("Q4", "The model claims you can hedge an option perfectly. Can you?",
      [], "Delta-hedged P&L simulation arrives in Phase 6."),
     ("Q5", "Given all these flaws, why does every desk still use Black-Scholes?",
-     [], "Put-call parity checker arrives in Phase 5."),
+     ["P7"], ""),
 ]
 
 _PANEL_TITLES = {
@@ -83,6 +127,9 @@ _PANEL_TITLES = {
     "P3": "ATM IV term structure",
     "P4": "Greeks — ATM ~30-DTE call & put",
     "P5": "Implied vs realized volatility",
+    "P6": "25-delta skew — time series",
+    "P7": "Put-call parity checker",
+    "P9": "Model-vs-market price heatmap",
 }
 
 _CSS = """

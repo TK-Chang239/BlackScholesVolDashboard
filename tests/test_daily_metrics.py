@@ -123,6 +123,25 @@ class TestRefreshRv:
         pd.testing.assert_frame_equal(once, twice)
 
 
+class TestSkewColumns:
+    def test_columns_include_skew(self):
+        assert IV_COLUMNS[-2:] == ["skew_25d", "skew_25d_dte"]
+        assert metric_columns(cfg())[:8] == IV_COLUMNS
+
+    def test_row_without_skew_is_nan(self):
+        row = session_metrics_row(dt.date(2026, 8, 28), 771.1, "yfinance", term([]),
+                                  {"convergence": 1.0}, cfg())
+        assert list(row) == IV_COLUMNS
+        assert np.isnan(row["skew_25d"]) and np.isnan(row["skew_25d_dte"])
+
+    def test_row_with_skew(self):
+        skew = {"skew_expiry": dt.date(2026, 9, 25), "skew_dte": 28,
+                "put_iv_25d": 0.25, "call_iv_25d": 0.20, "skew_25d": 0.05}
+        row = session_metrics_row(dt.date(2026, 8, 28), 771.1, "yfinance", term([]),
+                                  {"convergence": 1.0}, cfg(), skew=skew)
+        assert row["skew_25d"] == pytest.approx(0.05) and row["skew_25d_dte"] == 28
+
+
 class TestStorage:
     def test_read_missing_gives_empty_with_columns(self, tmp_path):
         df = storage.read_daily_metrics(tmp_path, metric_columns(cfg()))

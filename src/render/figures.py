@@ -1,6 +1,7 @@
 """Plotly figure builders for the dashboard panels. Pure: frames in, Figure out."""
 from datetime import timedelta
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -14,6 +15,10 @@ _LAYOUT = dict(
     title_y=0.97,
     title_yanchor="top",
 )
+
+# P7 carries a note above the plot area (close-based, or the early-exercise
+# count), so it needs more headroom between the title and the top row of cells.
+_PARITY_LAYOUT = {**_LAYOUT, "margin": dict(l=50, r=20, t=118, b=45)}
 
 
 def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
@@ -219,7 +224,191 @@ def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Fig
                       margin=dict(b=110))
     fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", secondary_y=False)
     fig.update_yaxes(title_text="Spread", tickformat="+.1%", secondary_y=True, showgrid=False)
-    first, last = series["date"].iloc[0], series["date"].iloc[-1]
-    if (last - first).days > 365:
-        fig.update_xaxes(range=[last - timedelta(days=180), last + timedelta(days=3)])
+    _apply_recent_range(fig, series["date"])
+    return fig
+
+
+def _apply_recent_range(fig: go.Figure, dates: pd.Series,
+                        recent_days: int = 180, span_days: int = 365) -> None:
+    """Default the x-axis to the recent window when the history is long
+    (a lone depth-probe session years back would otherwise crush the daily
+    series into a sliver). Double-click restores autorange."""
+    if len(dates) == 0:
+        return
+    first, last = dates.iloc[0], dates.iloc[-1]
+    if (last - first).days > span_days:
+        fig.update_xaxes(range=[last - timedelta(days=recent_days), last + timedelta(days=3)])
+
+
+def build_skew_figure(metrics: pd.DataFrame, annotations: pd.DataFrame) -> go.Figure:
+    title = "25-delta skew — put IV minus call IV at the ~30-DTE expiry"
+    series = metrics[["date", "skew_25d", "skew_25d_dte"]].dropna(subset=["skew_25d"])
+    series = series.sort_values("date").reset_index(drop=True)
+    if series.empty:
+        return _empty_figure(title, "No session with a bracketed 25-delta skew yet",
+                             yaxis_title="Vol points")
+    plotted = _break_gaps(series)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=plotted["date"], y=plotted["skew_25d"] * 100.0, mode="lines+markers",
+        name="25-delta skew (put − call)", line=dict(color="#8172b2"), marker=dict(size=5),
+        customdata=plotted["skew_25d_dte"],
+        hovertemplate="%{x}: %{y:+.1f} vol pts (%{customdata:.0f}d expiry)<extra></extra>"))
+    fig.add_hline(y=0, line=dict(color="grey", width=1, dash="dot"))
+    by_date = dict(zip(series["date"], series["skew_25d"] * 100.0))
+    for _, a in annotations.iterrows():
+        if a["date"] in by_date:
+            fig.add_annotation(x=a["date"], y=by_date[a["date"]], text=str(a["note"]),
+                               showarrow=True, arrowhead=2, ax=0, ay=-40,
+                               font=dict(size=11))
+    fig.update_layout(title=title, **_LAYOUT)
+    fig.update_yaxes(title_text="Vol points (put − call)", ticksuffix="")
+    _apply_recent_range(fig, series["date"])
+    return fig
+
+
+def _expiry_label(expiry, dte) -> str:
+    return f"{expiry.isoformat()} ({int(dte)}d)"
+
+
+def _muted_heatmap_layers(z_all, z_hot, xcats, y, colorbar_title: str, zmin: float, zmax: float,
+                          hovertemplate: str, hot_name: str = "beyond spread",
+                          all_name: str = "within spread",
+                          showscale: bool = True, **subplot) -> list[go.Heatmap]:
+    """Two layers: every cell faint, then only the non-muted cells at full
+    opacity with the colorbar — SPEC 3 P7/P9's 'within-spread region muted'.
+
+    `xcats` (not `x`) so that `**subplot`'s own `x=` (colorbar x-position,
+    used by P9's two-subplot layout) doesn't collide with the heatmap's
+    x-axis categories parameter. `showscale=False` keeps the trace (and so
+    the trace count the P9 toggle's `visible` arrays depend on) while
+    suppressing a second colorbar for a scale that is already shown.
+
+    `all_name` names the faint layer, which carries EVERY cell -- the hot ones
+    included -- so what it should be called depends on what the caller mutes.
+    """
+    common = dict(x=xcats, y=y, colorscale="RdBu", zmid=0, zmin=zmin, zmax=zmax,
+                  hoverongaps=False, hovertemplate=hovertemplate)
+    return [
+        go.Heatmap(z=z_all, opacity=0.3, showscale=False, name=all_name, **common),
+        go.Heatmap(z=z_hot, opacity=1.0, showscale=showscale, name=hot_name,
+                   colorbar=dict(title=colorbar_title, **subplot), **common),
+    ]
+
+
+def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
+    raw_title = "Put-call parity — C − P versus S·e⁻ᵠᵀ − K·e⁻ʳᵀ, in dollars"
+    if parity.empty:
+        return _empty_figure(raw_title, "No strike/expiry pairs with both a call and a put priced")
+    p = parity.copy()
+    # Headline the forward-calibrated deviation when there is one; fall back to
+    # the spot-based one when no expiry brackets spot (or on an old frame).
+    calibrated = "deviation_fwd" in p.columns and bool(p["deviation_fwd"].notna().any())
+    value_col = "deviation_fwd" if calibrated else "deviation"
+    viol_col = "tradeable_violation_fwd" if calibrated else "tradeable_violation"
+    title = ("Put-call parity — C − P against the market's own implied forward"
+             if calibrated else raw_title)
+    liquid = (p["liquid"].astype(bool) if "liquid" in p.columns
+              else pd.Series(True, index=p.index))
+    # An in-the-money put gap inside the American early-exercise bound is
+    # consistent with early exercise -- not proof of it, but enough that it must
+    # not read as an alarm: it stays in the faint layer.
+    explained = (p["early_exercise_explained"].astype(bool)
+                 if "early_exercise_explained" in p.columns
+                 else pd.Series(False, index=p.index))
+    p["label"] = [_expiry_label(e, d) for e, d in zip(p["expiry"], p["dte"])]
+    order = (p[["label", "dte"]].drop_duplicates().sort_values("dte")["label"].tolist())
+    z_all = p.pivot(index="strike", columns="label", values=value_col).reindex(columns=order)
+    hot = p[value_col].where(p[viol_col].astype(bool) & liquid & ~explained)
+    z_hot = p.assign(hot=hot).pivot(index="strike", columns="label", values="hot").reindex(columns=order)
+    # Robust colour limit, read off the LIQUID cells only: a strike with no open
+    # interest can carry a $160 stale-quote outlier, and letting it into the
+    # percentile flattens every tradeable cell to white.
+    vals = np.abs(p.loc[liquid, value_col].to_numpy(dtype=float))
+    finite = vals[np.isfinite(vals)]
+    if finite.size == 0:                    # nothing liquid: scale on what there is
+        vals = np.abs(p[value_col].to_numpy(dtype=float))
+        finite = vals[np.isfinite(vals)]
+    lim = float(np.percentile(finite, 98, method="lower")) if finite.size else 1.0
+    lim = max(lim, 0.05)
+    fig = go.Figure()
+    for layer in _muted_heatmap_layers(
+            z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order, z_all.index.tolist(),
+            ("C − P − e⁻ʳᵀ(F − K), $" if calibrated else "C − P − parity, $"), -lim, lim,
+            "%{x}<br>K %{y}: %{z:+.2f} $<extra></extra>",
+            hot_name="unexplained", all_name="all pairs"):
+        fig.add_trace(layer)
+    fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=spot, y1=spot,
+                  line=dict(color="grey", width=1, dash="dot"))
+    # Both notes sit ABOVE the plot area (paper coords, anchored by their bottom
+    # edge), never over the top row of cells or the y-axis labels. They are
+    # mutually exclusive: a close-based frame has no tradeable violations to
+    # explain. `_PARITY_LAYOUT` gives them the headroom under the title.
+    note = dict(xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
+                xanchor="left", yanchor="bottom", font=dict(size=11, color="#555"))
+    if p["spread"].notna().sum() == 0:
+        fig.add_annotation(text="close-based session — spreads unknown, tradeability not assessable",
+                           **note)
+    n_ee = int((explained & liquid).sum())
+    if n_ee:
+        fig.add_annotation(
+            text=(f"{n_ee} put-rich gap{'' if n_ee == 1 else 's'} shown muted "
+                  "— consistent with the American early-exercise bound"),
+            **note)
+    fig.update_layout(title=title, **_PARITY_LAYOUT)
+    fig.update_xaxes(title_text="Expiry")
+    fig.update_yaxes(title_text="Strike")
+    return fig
+
+
+def build_model_vs_market_figure(mvm: pd.DataFrame, flat_vol: float) -> go.Figure:
+    title = "Model vs market — every contract priced at one flat vol"
+    if mvm.empty:
+        return _empty_figure(title, "No flat ~30-DTE ATM vol to price the chain with")
+    title += f" ({flat_vol:.1%})"
+    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.14,
+                        subplot_titles=("Calls", "Puts"))
+    # `deviation_vol` is a FRACTION of vol; a vol point is 1/100 of it. P6 one
+    # section above already multiplies by 100 and hovers "+4.0 vol pts", so
+    # plotting the fraction under a colorbar titled "Vol points" would have two
+    # panels of the same page disagreeing by 100x about what a vol point is.
+    # Scale here, in the figure, exactly as P6 does. `deviation_pct` is a
+    # fraction OF A PRICE and plotly's `%` format is the right reading of it,
+    # so it keeps scale 1.0.
+    metrics = [("deviation_pct", "% of market price", 1.0, 1.0, "%{z:+.0%}"),
+               ("deviation_vol", "Vol points", 100.0, 20.0, "%{z:+.1f} vol pts")]
+    for mi, (col, cb_title, scale, lim, fmt) in enumerate(metrics):
+        for ci, kind in enumerate(("call", "put"), start=1):
+            g = mvm[mvm["kind"] == kind].copy()
+            g[col] = g[col].astype(float) * scale
+            g["label"] = [_expiry_label(e, d) for e, d in zip(g["expiry"], g["dte"])]
+            order = g[["label", "dte"]].drop_duplicates().sort_values("dte")["label"].tolist()
+            z_all = g.pivot(index="strike", columns="label", values=col).reindex(columns=order)
+            z_hot = (g.assign(hot=g[col].where(~g["within_spread"]))
+                       .pivot(index="strike", columns="label", values="hot").reindex(columns=order))
+            # Both subplots of a metric share zmin/zmax, so ONE colorbar says
+            # everything — and it goes to the right of the whole figure. Drawing
+            # a second at x=0.46 put it inside the Puts subplot, on top of its
+            # y-axis tick labels. The trace itself stays, so the toggle's
+            # `visible` arrays still line up 4-for-4.
+            layers = _muted_heatmap_layers(
+                z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order,
+                z_all.index.tolist(), cb_title, -lim, lim,
+                "%{x}<br>K %{y}: " + fmt + "<extra>" + kind + "</extra>",
+                showscale=(ci == 2), x=1.02, len=0.9)
+            for layer in layers:
+                layer.visible = (mi == 0)
+                fig.add_trace(layer, row=1, col=ci)
+    vis_pct = [True] * 4 + [False] * 4
+    vis_vol = [False] * 4 + [True] * 4
+    fig.update_layout(
+        title=title, **_LAYOUT,
+        updatemenus=[dict(type="buttons", direction="left", x=0.0, y=1.14, xanchor="left",
+                          yanchor="bottom", showactive=True,
+                          buttons=[dict(label="% of market price", method="update",
+                                        args=[{"visible": vis_pct}]),
+                                   dict(label="Vol points", method="update",
+                                        args=[{"visible": vis_vol}])])])
+    fig.update_xaxes(title_text="Expiry")
+    fig.update_yaxes(title_text="Strike", row=1, col=1)
     return fig
