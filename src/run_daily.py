@@ -214,7 +214,7 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["daily"]),
         "P8b": build_hedge_scatter_figure(hedge["trades"], hedge["fit"],
                                           next_settlement=hsum["next_settlement"]),
-        "P8c": build_hedge_histogram_figure(hedge["portfolio"]),
+        "P8c": build_hedge_histogram_figure(hedge["daily"]),
         "P9": build_model_vs_market_figure(mvm, sigma_p1),
     }
     extras = {"P4": greek_tiles_html(tiles, tiles_prev, prev_label),
@@ -254,10 +254,20 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "implied_carry_expiries": int(carry["n_expiries"]),
         "implied_carry_statistic": _carry_statistic(carry),
         "hedge_trades": hsum["n_trades"],
+        # `settled` means "reached expiry AND plottable"; `sparse` trades reached
+        # expiry too. Publishing only the first told a reader of status.json that
+        # nothing had finished while a finished trade sat in `hedge_cum_pnl`.
         "hedge_trades_settled": hsum["n_settled"],
+        "hedge_trades_reached_expiry": hsum["n_reached_expiry"],
         "hedge_trades_open": hsum["n_open"],
         "hedge_trades_sparse": hsum["n_sparse"],
+        "hedge_months_skipped": hsum["n_months_skipped"],
         "hedge_sessions": hsum["n_days"],
+        # The entry rule takes the monthly expiry NEAREST the target, which from
+        # the first session of a month is rarely near it. Publish the tenor the
+        # sim actually traded rather than leaving `entry_dte: 30` to imply it.
+        "hedge_dte_at_entry_min": hsum["dte_at_entry_min"],
+        "hedge_dte_at_entry_max": hsum["dte_at_entry_max"],
         "hedge_cum_pnl": _round_or_none(hsum["cum_pnl"], 4),
         "hedge_market_mark_share": _round_or_none(hsum["market_mark_share"], 4),
         "hedge_slope_per_vol_point": _round_or_none(hsum["slope"], 4),

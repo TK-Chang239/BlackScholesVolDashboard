@@ -44,6 +44,33 @@ def test_replays_the_archive_and_returns_every_key(tmp_path):
     assert out["trades"]["entry_date"].iloc[0] == dates[0]
     assert out["summary"]["n_open"] == 1
     assert len(out["portfolio"]) == 6
+    # the keys the page and status.json read, all the way through the driver
+    s = out["summary"]
+    assert s["n_reached_expiry"] == 0 and s["n_months_skipped"] == 0
+    assert s["dte_at_entry_min"] == s["dte_at_entry_max"] == 30
+
+
+def test_a_month_that_cannot_seed_a_trade_is_counted_in_the_summary(tmp_path):
+    # F11: the only expiry in this archive is 61 days out, past
+    # MAX_ENTRY_DTE_ERROR, so the month is rejected. That has to be visible --
+    # on the real archive June 2026 goes exactly this way.
+    dates = [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(4)]
+    write_archive(tmp_path, dates, expiry=dt.date(2026, 8, 1))
+    out = replay_hedge_sim(tmp_path, 0.04, 0.013, CFG)
+    assert out["trades"].empty
+    assert out["summary"]["n_months_skipped"] == 1
+
+
+def test_a_chain_session_the_underlying_does_not_cover_is_skipped_not_raised(tmp_path):
+    # F10: `closes[entry_date]` was unguarded, so one absent close raised a
+    # KeyError out of the whole daily run.
+    dates = [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(6)]
+    write_archive(tmp_path, dates, expiry=dt.date(2026, 7, 1))
+    u = pd.read_parquet(tmp_path / "data" / "underlying.parquet")
+    u[u["date"] != dates[0]].to_parquet(tmp_path / "data" / "underlying.parquet")
+    out = replay_hedge_sim(tmp_path, 0.04, 0.013, CFG)
+    assert out["trades"].empty
+    assert out["summary"]["n_months_skipped"] == 1
 
 
 def test_ignores_non_date_filenames(tmp_path):

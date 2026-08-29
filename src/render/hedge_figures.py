@@ -37,18 +37,36 @@ def build_hedge_pnl_figure(port: pd.DataFrame, daily: pd.DataFrame) -> go.Figure
     return fig
 
 
-def build_hedge_histogram_figure(port: pd.DataFrame) -> go.Figure:
-    """Distribution of daily hedged P&L.
+def build_hedge_histogram_figure(daily: pd.DataFrame) -> go.Figure:
+    """Distribution of daily hedged P&L, over market-marked sessions only.
 
-    The archive's FIRST session has no prior mark to difference against, so it
-    is dropped. Later trades' own opening days are not dropped: they are folded
-    into a portfolio total that already carries the older trades' moves.
+    Takes the PER-TRADE daily frame, not the aggregated portfolio, because both
+    exclusions below are properties of a trade rather than of a calendar day.
+
+    Each trade's own opening day is a definitional zero -- no prior mark to
+    difference against. Slicing only the portfolio's first row dropped the
+    archive's first day and nothing else, so every later entry that did not
+    happen to overlap a live trade planted an exact 0.00 at the mode of a panel
+    whose entire caption is about its width.
+
+    A MODEL-marked day prices the straddle with `bs_price` at the carried-forward
+    IV, so it moves with spot and time decay at frozen vol and has no vol
+    mark-to-market in it at all: those days are Black-Scholes-conforming by
+    construction. The scatter and the fit already refuse them (that is what
+    `MIN_MARKET_MARK_SHARE` is for); admitting them here narrowed the measured
+    width towards the answer the model wants.
     """
-    daily_pnl = port["pnl_day"].iloc[1:] if len(port) > 1 else pd.Series(dtype=float)
-    daily_pnl = daily_pnl.dropna()
+    empty = empty_figure("Daily hedged P&L — distribution",
+                         "Not enough market-quoted sessions yet to show a distribution.")
+    if daily.empty:
+        return empty
+    kept = daily[(daily["date"] != daily["entry_date"])
+                 & (daily["mark_source"] != "model")]
+    if kept.empty:
+        return empty
+    daily_pnl = kept.groupby("date")["pnl_day"].sum().dropna()
     if len(daily_pnl) < 1:
-        return empty_figure("Daily hedged P&L — distribution",
-                            "Not enough sessions yet to show a distribution.")
+        return empty
     fig = go.Figure(go.Histogram(x=daily_pnl.to_numpy(dtype=float), nbinsx=25,
                                  marker=dict(color="#2b6cb0", line=dict(width=0.5, color="white")),
                                  name="Daily P&L",
@@ -76,6 +94,17 @@ def build_hedge_scatter_figure(trades: pd.DataFrame, fit: dict,
                        & trades["pnl"].notna()]
                if not trades.empty else trades)
     if settled.empty:
+        # "reached expiry" and "plottable" are different questions: `sparse` is a
+        # sub-kind of settled, so a trade can be finished and still be off this
+        # chart. Only promise a FIRST settlement when nothing has finished at all.
+        reached = (int((trades["status"].isin(("settled", "sparse"))).sum())
+                   if not trades.empty else 0)
+        if reached:
+            plural = "s have" if reached != 1 else " has"
+            carries = "none carries" if reached != 1 else "it does not carry"
+            return empty_figure(
+                title, f"{reached} simulated trade{plural} reached expiry, but "
+                       f"{carries} enough market-quoted marks to plot.")
         when = (f" The first settles {next_settlement.isoformat()}."
                 if next_settlement is not None else "")
         return empty_figure(title, "No simulated trade has reached expiry yet." + when)

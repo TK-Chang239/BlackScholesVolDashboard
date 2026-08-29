@@ -283,6 +283,14 @@ class TestSimulateTrade:
         assert trade["lifetime_rv"] == pytest.approx(0.0, abs=1e-9)
         assert trade["edge"] == pytest.approx(trade["entry_iv"] - trade["lifetime_rv"])
 
+    def test_entry_session_absent_from_the_underlying_is_skipped_not_raised(self):
+        # F10: a stored chain can carry a session `underlying.parquet` does not.
+        # `closes[entry_date]` was an unguarded dict lookup, so one absent close
+        # raised a KeyError out of the entire daily run.
+        entry, expiry, sel, chains, u = self._setup([100.0] * 6)
+        without_entry = u[u["date"] != entry].reset_index(drop=True)
+        assert simulate_trade(entry, sel, chains, without_entry, 0.04, 0.013, CFG) is None
+
     def test_unsupported_hedge_frequency_raises(self):
         entry, expiry, sel, chains, u = self._setup([100.0] * 4)
         cfg = {**CFG, "hedge_sim": {**CFG["hedge_sim"], "hedge_frequency": "weekly"}}
@@ -323,18 +331,42 @@ class TestSimulate:
 
     def test_one_trade_per_month_with_declared_columns(self):
         chains, u = self._archive(months=2)
-        trades, daily = simulate(chains, u, 0.04, 0.013, CFG)
+        trades, daily, skipped = simulate(chains, u, 0.04, 0.013, CFG)
         assert list(trades.columns) == TRADE_COLUMNS
         assert len(trades) == trades["entry_date"].nunique()
         months = {(d.year, d.month) for d in trades["entry_date"]}
         assert len(months) == len(trades)
+        assert skipped == 0
 
     def test_empty_archive_returns_empty_frames_with_columns(self):
         from src.analytics.hedge_sim import DAILY_COLUMNS
         u = pd.DataFrame({"date": [], "close": [], "adjusted_close": [], "volume": []})
-        trades, daily = simulate({}, u, 0.04, 0.013, CFG)
+        trades, daily, skipped = simulate({}, u, 0.04, 0.013, CFG)
         assert list(trades.columns) == TRADE_COLUMNS and trades.empty
         assert list(daily.columns) == DAILY_COLUMNS and daily.empty
+        assert skipped == 0
+
+    def test_a_month_with_no_expiry_near_the_target_is_counted_not_dropped(self):
+        # F11: `sel is None` used to `continue` silently, so the sample's own
+        # selection was invisible. On the real archive June 2026 goes this way --
+        # its monthly is Juneteenth-shifted out of the ladder.
+        chains, u = self._archive(months=2)
+        entry = min(chains)
+        far = entry + dt.timedelta(days=30 + MAX_ENTRY_DTE_ERROR + 1)
+        chains[entry] = make_chain(entry, 100.0, {far: 0.20})
+        trades, daily, skipped = simulate(chains, u, 0.04, 0.013, CFG)
+        assert skipped == 1
+        assert len(trades) == 1
+        assert entry not in set(trades["entry_date"])
+
+    def test_a_month_whose_entry_close_is_missing_is_counted_not_dropped(self):
+        # F10 through the loop: the guard must skip the month AND be visible.
+        chains, u = self._archive(months=2)
+        entry = min(chains)
+        u = u[u["date"] != entry].reset_index(drop=True)
+        trades, daily, skipped = simulate(chains, u, 0.04, 0.013, CFG)
+        assert skipped == 1
+        assert entry not in set(trades["entry_date"])
 
 
 class TestPortfolioDaily:
@@ -369,12 +401,16 @@ class TestFit:
         assert fit["r2"] == pytest.approx(1.0)
 
     def test_ignores_open_and_sparse_trades(self):
+        # The name promised coverage of BOTH exclusions but the frame held no
+        # `sparse` row -- over the exact status the page then mis-handled (F1).
         trades = pd.DataFrame({
-            "edge": [0.01, 0.02, 0.03],
-            "pnl": [2.0, 4.0, 999.0],
-            "status": ["settled", "settled", "open"],
+            "edge": [0.01, 0.02, 0.03, 0.04],
+            "pnl": [2.0, 4.0, 999.0, -999.0],
+            "status": ["settled", "settled", "open", "sparse"],
         })
-        assert fit_pnl_vs_edge(trades)["n"] == 2
+        fit = fit_pnl_vs_edge(trades)
+        assert fit["n"] == 2
+        assert fit["slope"] == pytest.approx(2.0)   # the 999s never entered the line
 
     def test_fewer_than_two_points_gives_no_line(self):
         trades = pd.DataFrame({"edge": [0.01], "pnl": [2.0], "status": ["settled"]})
@@ -390,30 +426,84 @@ class TestFit:
         assert fit_pnl_vs_edge(trades)["n"] == 2
 
 
+NO_FIT = {"n": 0, "slope": np.nan, "intercept": np.nan, "r2": np.nan}
+
+
 class TestHedgeSummary:
-    def test_counts_statuses_and_reports_the_next_settlement(self):
-        trades = pd.DataFrame({
-            "entry_date": [dt.date(2026, 6, 1), dt.date(2026, 7, 1)],
-            "expiry": [dt.date(2026, 7, 17), dt.date(2026, 8, 21)],
-            "exit_date": [dt.date(2026, 7, 17), dt.date(2026, 8, 12)],
-            "pnl": [1.0, -0.5], "edge": [0.01, 0.02],
-            "n_days": [30, 20], "n_market_marks": [27, 20], "n_model_marks": [3, 0],
-            "market_mark_share": [0.9, 1.0], "status": ["settled", "open"],
+    def _trades(self, statuses, dtes=(17, 35)):
+        n = len(statuses)
+        return pd.DataFrame({
+            "entry_date": [dt.date(2026, m, 1) for m in range(6, 6 + n)],
+            "expiry": [dt.date(2026, m + 1, 17) for m in range(6, 6 + n)],
+            "exit_date": [dt.date(2026, m + 1, 12) for m in range(6, 6 + n)],
+            "dte_at_entry": list(dtes)[:n],
+            "pnl": [1.0, -0.5, 0.25][:n], "edge": [0.01, 0.02, 0.03][:n],
+            "n_days": [30, 20, 10][:n], "n_market_marks": [27, 20, 1][:n],
+            "n_model_marks": [3, 0, 9][:n],
+            "market_mark_share": [0.9, 1.0, 0.1][:n], "status": list(statuses),
         })
+
+    def test_counts_statuses_and_reports_the_next_settlement(self):
+        trades = self._trades(["settled", "open"])
         port = pd.DataFrame({"date": [dt.date(2026, 6, 1), dt.date(2026, 6, 2)],
                              "pnl_day": [0.0, 1.0], "pnl_cum": [0.0, 1.0], "n_open": [1, 1]})
         s = hedge_summary(trades, port, {"n": 1, "slope": np.nan,
                                          "intercept": np.nan, "r2": np.nan})
         assert (s["n_trades"], s["n_settled"], s["n_open"], s["n_sparse"]) == (2, 1, 1, 0)
-        assert s["next_settlement"] == dt.date(2026, 8, 21)
+        assert s["next_settlement"] == dt.date(2026, 8, 17)
         assert s["cum_pnl"] == pytest.approx(1.0)
         assert s["first_entry"] == dt.date(2026, 6, 1)
         assert s["market_mark_share"] == pytest.approx(47 / 50)
 
+    def test_a_sparse_trade_has_reached_expiry_even_though_it_is_not_plottable(self):
+        # F1: `sparse` is a sub-kind of SETTLED. Counting it as neither settled
+        # nor open let the page say "none has reached expiry yet" in the same
+        # sentence as a cumulative P&L that already contained its round trip.
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
+                             "pnl_cum": [2.26], "n_open": [1]})
+        s = hedge_summary(self._trades(["sparse", "open"]), port, NO_FIT)
+        assert s["n_settled"] == 0          # still not plottable
+        assert s["n_sparse"] == 1
+        assert s["n_reached_expiry"] == 1   # but it HAS finished
+
+    def test_reached_expiry_counts_settled_and_sparse_together(self):
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
+                             "pnl_cum": [1.0], "n_open": [1]})
+        s = hedge_summary(self._trades(["settled", "sparse", "open"], dtes=(17, 35, 45)),
+                          port, NO_FIT)
+        assert (s["n_settled"], s["n_sparse"], s["n_reached_expiry"]) == (1, 1, 2)
+
+    def test_carries_the_tenor_actually_traded(self):
+        # F5: the entry rule takes the monthly NEAREST 30 days, which from the
+        # first session of a month is systematically ~17 -- and ~45 when that
+        # month's monthly is missing. The range has to reach the page.
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
+                             "pnl_cum": [1.0], "n_open": [1]})
+        s = hedge_summary(self._trades(["settled", "open"], dtes=(17, 45)), port, NO_FIT)
+        assert s["dte_at_entry_min"] == 17
+        assert s["dte_at_entry_max"] == 45
+
+    def test_skipped_month_count_reaches_the_summary(self):
+        s = hedge_summary(pd.DataFrame(columns=TRADE_COLUMNS),
+                          pd.DataFrame(columns=["date", "pnl_day", "pnl_cum", "n_open"]),
+                          NO_FIT, n_months_skipped=3)
+        assert s["n_months_skipped"] == 3
+
+    def test_summary_publishes_nothing_no_reader_consumes(self):
+        # F9: these three were computed on every run and read by nobody, under a
+        # docstring calling the dict "everything the page and status.json need".
+        port = pd.DataFrame({"date": [dt.date(2026, 6, 1), dt.date(2026, 6, 2)],
+                             "pnl_day": [0.0, 1.0], "pnl_cum": [0.0, 1.0], "n_open": [1, 1]})
+        s = hedge_summary(self._trades(["settled", "open"]), port, NO_FIT)
+        for dead in ("last_mark", "mean_daily_pnl", "sd_daily_pnl"):
+            assert dead not in s
+
     def test_empty_summary_is_all_zeros_and_nones(self):
         s = hedge_summary(pd.DataFrame(columns=TRADE_COLUMNS),
                           pd.DataFrame(columns=["date", "pnl_day", "pnl_cum", "n_open"]),
-                          {"n": 0, "slope": np.nan, "intercept": np.nan, "r2": np.nan})
+                          NO_FIT)
         assert s["n_trades"] == 0 and s["first_entry"] is None
         assert s["next_settlement"] is None
         assert np.isnan(s["cum_pnl"])
+        assert s["n_reached_expiry"] == 0 and s["n_months_skipped"] == 0
+        assert s["dte_at_entry_min"] is None and s["dte_at_entry_max"] is None

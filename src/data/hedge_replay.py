@@ -34,8 +34,8 @@ def replay_hedge_sim(root: Path, r: float, q: float, cfg: dict,
 
     if underlying is None:
         underlying = storage.read_underlying(root)
-    trades, daily = simulate(chains, underlying, r, q, cfg)
+    trades, daily, months_skipped = simulate(chains, underlying, r, q, cfg)
     port = portfolio_daily(daily)
     fit = fit_pnl_vs_edge(trades)
     return {"trades": trades, "daily": daily, "portfolio": port, "fit": fit,
-            "summary": hedge_summary(trades, port, fit)}
+            "summary": hedge_summary(trades, port, fit, months_skipped)}

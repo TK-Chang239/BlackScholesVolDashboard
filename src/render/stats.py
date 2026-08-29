@@ -107,8 +107,33 @@ def parity_summary_html(summary: dict, carry: dict | None,
     return text + _carry_clause(carry, r, q) + "</p>"
 
 
-_SIM_LABEL = ("Simulation for learning — a hypothetical short straddle sold at the "
-              "mid, delta-hedged once a day on one share. Not a real position, not advice.")
+# SPEC 3 P8's "Note" requires this line, so it has to be true. `compute_chain_iv`
+# routes `price_used` to the quote MID only for live rows and to the CLOSE
+# otherwise, and almost the whole stored archive is backfill -- so "sold at the
+# mid" described a price the simulation has essentially never paid. Name the
+# rule instead, the way the P3 overlay label and the P7 stat line already do.
+_SIM_LABEL = ("Simulation for learning — a hypothetical short straddle entered and marked "
+              "at each session's stored price: the quote mid on live sessions, the official "
+              "close on backfilled (close-based) ones. Delta-hedged once a day on one share. "
+              "No bid–ask spread is ever crossed. Not a real position, not advice.")
+
+
+def _tenor_clause(summary: dict) -> str:
+    """The tenor actually traded, min to max.
+
+    The entry rule takes the monthly expiry NEAREST the target, and the stored
+    chain holds monthly expiries only -- so read from the first session of a
+    month the nearest one is usually 16-18 days out, and ~45 whenever that
+    month's own monthly is missing from the ladder. A delta-hedged straddle's
+    round-trip P&L scales roughly with sqrt(T), so leaving the tenor unstated
+    hands the scatter a vertical spread the caption would otherwise blame
+    entirely on hedging error.
+    """
+    lo, hi = summary["dte_at_entry_min"], summary["dte_at_entry_max"]
+    if lo is None or hi is None:
+        return ""
+    return (f", sold {lo} days from expiry" if lo == hi
+            else f", sold {lo}–{hi} days from expiry")
 
 
 def hedge_summary_html(summary: dict) -> str:
@@ -121,16 +146,26 @@ def hedge_summary_html(summary: dict) -> str:
     money = f"${summary['cum_pnl']:,.2f}" if np.isfinite(summary["cum_pnl"]) else "n/a"
     head = (f"{summary['n_trades']} simulated trade"
             f"{'s' if summary['n_trades'] != 1 else ''} since {since}: "
-            f"cumulative P&L {money} over {summary['n_days']} sessions")
+            f"cumulative P&L {money} over {summary['n_days']} sessions"
+            f"{_tenor_clause(summary)}")
 
     n = summary["n_settled"]
+    reached = summary["n_reached_expiry"]
     slope = summary.get("slope", float("nan"))
     r2 = summary.get("r2", float("nan"))
     fit_usable = np.isfinite(slope) and np.isfinite(r2)
-    if n == 0:
+    if n == 0 and reached == 0:
         when = summary["next_settlement"]
         tail = ("; none has reached expiry yet, so the P&L-vs-edge scatter is still empty"
                 + (f" — the first settles {when.isoformat()}" if when is not None else ""))
+    elif n == 0:
+        # A `sparse` trade HAS reached expiry; it is only off the scatter. Saying
+        # "none has reached expiry yet" here contradicted the cumulative P&L in
+        # the same sentence, which already carried that trade's round trip.
+        plural = "s have" if reached != 1 else " has"
+        carries = "none carries" if reached != 1 else "it does not carry"
+        tail = (f"; {reached} trade{plural} reached expiry but {carries} enough market "
+                "marks to plot, so the P&L-vs-edge scatter is still empty")
     elif n == 1:
         tail = "; exactly one trade has settled — one round trip, not a relationship"
     elif n < 5:
@@ -149,9 +184,23 @@ def hedge_summary_html(summary: dict) -> str:
 
     share = summary.get("market_mark_share", float("nan"))
     if np.isfinite(share) and share < 0.999:
-        tail += (f". {1 - share:.0%} of daily marks are our own model, not a quote — "
-                 "an expiry drops out of the stored chain in its final week")
-    if summary["n_sparse"]:
+        # The old clause blamed an expiry dropping out of the chain in its final
+        # week. That is one cause among several and it is stated unconditionally,
+        # so on a sparse archive -- where whole months of chains are simply
+        # absent -- it asserts a cause the data contradicts. State only what is
+        # true by construction: a model mark is exactly a session the archive
+        # could not quote this straddle on.
+        tail += (f". {1 - share:.0%} of daily marks are our own model at the last quoted "
+                 "vol, not a market quote — the stored archive carries no usable quote "
+                 "for that straddle on those sessions")
+    # When nothing has settled, the branch above has already said that every
+    # finished trade is off the scatter; repeating it here would be redundant.
+    if summary["n_sparse"] and n > 0:
         tail += (f". {summary['n_sparse']} trade(s) are excluded from the scatter for "
                  "having too few market marks")
+    skipped = summary["n_months_skipped"]
+    if skipped:
+        tail += (f". {skipped} month{'s' if skipped != 1 else ''} in the archive produced "
+                 f"no trade — {'their' if skipped != 1 else 'its'} first stored session "
+                 "could not seed a straddle at the target tenor")
     return f"<p class='stat'>{head}{tail}.</p><p class='caption'>{_SIM_LABEL}</p>"

@@ -1156,7 +1156,7 @@ git commit -m "feat: stateless P8 replay driver over the stored chain archive"
 - Consumes: `portfolio_daily` output columns `["date", "pnl_day", "pnl_cum", "n_open"]`; `TRADE_COLUMNS`.
 - Produces:
   - `src/render/base.py`: `LAYOUT: dict`, `empty_figure(title: str, message: str, **layout) -> go.Figure`
-  - `src/render/hedge_figures.py`: `build_hedge_pnl_figure(port, trades, daily) -> go.Figure`, `build_hedge_histogram_figure(port) -> go.Figure`
+  - `src/render/hedge_figures.py`: `build_hedge_pnl_figure(port, daily) -> go.Figure`, `build_hedge_histogram_figure(daily) -> go.Figure`
 
 **Why `base.py`:** `figures.py` is already 400+ lines with eight builders, and the Phase 5 review recorded "split figures.py" as a deferred item. Extracting only the two genuinely shared helpers keeps the diff small and stops `hedge_figures.py` from importing another module's privates.
 
@@ -1625,7 +1625,7 @@ git commit -m "feat: P8 P&L-vs-edge scatter with least-squares fit and honest st
 - Test: `tests/test_render.py` (append), `tests/test_pipeline.py` (append)
 
 **Interfaces:**
-- Consumes: `replay_hedge_sim(root, r, q, cfg, extra_chains=None, underlying=None) -> dict`; `build_hedge_pnl_figure(port, trades, daily)`, `build_hedge_scatter_figure(trades, fit, next_settlement=None)`, `build_hedge_histogram_figure(port)`, `hedge_summary_html(summary)`.
+- Consumes: `replay_hedge_sim(root, r, q, cfg, extra_chains=None, underlying=None) -> dict`; `build_hedge_pnl_figure(port, daily)`, `build_hedge_scatter_figure(trades, fit, next_settlement=None)`, `build_hedge_histogram_figure(daily)`, `hedge_summary_html(summary)`.
 - Produces: panel ids `"P8a"`, `"P8b"`, `"P8c"` in `figures`; the `"P8a"` key in `extras`; nine new `status.json` keys.
 
 - [ ] **Step 1: Write the failing page tests**
@@ -1776,10 +1776,10 @@ In the compute stage, immediately after the P9 block and before the annotations 
 Add to the `figures` dict:
 
 ```python
-        "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["trades"], hedge["daily"]),
+        "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["daily"]),
         "P8b": build_hedge_scatter_figure(hedge["trades"], hedge["fit"],
                                           next_settlement=hsum["next_settlement"]),
-        "P8c": build_hedge_histogram_figure(hedge["portfolio"]),
+        "P8c": build_hedge_histogram_figure(hedge["daily"]),
 ```
 
 Add to `extras`:
@@ -1925,4 +1925,4 @@ git commit -m "feat: first real P8 run — hedge simulation live on the dashboar
 
 **Placeholder scan:** every code step carries the actual code; every test step carries the actual assertions; no "TBD", no "handle edge cases", no "similar to Task N".
 
-**Type consistency:** `select_straddle` returns the dict consumed by `simulate_trade` (keys `expiry, dte, strike, call_price, put_price, straddle, call_iv, put_iv, iv`). `simulate` returns `(trades, daily)`; `portfolio_daily` consumes `daily` and produces `["date","pnl_day","pnl_cum","n_open"]`, which `build_hedge_pnl_figure` and `build_hedge_histogram_figure` consume. `fit_pnl_vs_edge` returns `{n, slope, intercept, r2}`, consumed by `build_hedge_scatter_figure` and `hedge_summary`. `hedge_summary` returns the keys `hedge_summary_html` and `run_daily`'s status block read. `replay_hedge_sim` returns exactly `{trades, daily, portfolio, fit, summary}`, matching Task 7's use.
+**Type consistency:** `select_straddle` returns the dict consumed by `simulate_trade` (keys `expiry, dte, strike, call_price, put_price, straddle, call_iv, put_iv, iv`). `simulate` returns `(trades, daily, n_months_skipped)`; `portfolio_daily` consumes `daily` and produces `["date","pnl_day","pnl_cum","n_open"]`, which `build_hedge_pnl_figure` consumes; `build_hedge_histogram_figure` consumes the per-trade `daily` frame instead, so it can drop each trade's own day 0 and its model-marked days before aggregating. `fit_pnl_vs_edge` returns `{n, slope, intercept, r2}`, consumed by `build_hedge_scatter_figure` and `hedge_summary`. `hedge_summary` returns the keys `hedge_summary_html` and `run_daily`'s status block read. `replay_hedge_sim` returns exactly `{trades, daily, portfolio, fit, summary}`, matching Task 7's use.

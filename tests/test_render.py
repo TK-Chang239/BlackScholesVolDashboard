@@ -806,20 +806,73 @@ class TestHedgeFigures:
         assert by_name["trade 2026-06-01"] == [0.0, 0.5, 1.0]
         assert by_name["trade 2026-06-02"] == [0.0, -0.3, 0.2]
 
-    def test_histogram_excludes_the_zero_entry_day_and_marks_the_mean(self):
+    def _daily_sequential(self):
+        """Two trades that do NOT overlap -- the shape F4 was found on.
+
+        Trade B opens on 2026-06-10, a day no other trade is live, so its
+        definitional day-0 zero is the WHOLE of that session's portfolio total.
+        Slicing only the portfolio's first row left it in the sample. One of
+        trade A's days is model-marked (F6).
+        """
+        import datetime as dt
+        return pd.DataFrame({
+            "date": [dt.date(2026, 6, 1), dt.date(2026, 6, 2), dt.date(2026, 6, 3),
+                     dt.date(2026, 6, 10), dt.date(2026, 6, 11), dt.date(2026, 6, 12)],
+            "entry_date": [dt.date(2026, 6, 1)] * 3 + [dt.date(2026, 6, 10)] * 3,
+            "pnl_day": [0.0, 1.0, -0.5, 0.0, 2.0, -1.0],
+            "mark_source": ["market", "market", "model",
+                            "market", "market", "settlement"],
+        })
+
+    def _hist_x(self, daily):
         from src.render.hedge_figures import build_hedge_histogram_figure
-        fig = build_hedge_histogram_figure(self._port())
+        fig = build_hedge_histogram_figure(daily)
         bars = [t for t in fig.data if t.type == "histogram"]
         assert len(bars) == 1
-        assert list(bars[0].x) == [1.0, -0.5, 2.0, -1.0]
+        return list(bars[0].x), fig
+
+    def test_histogram_drops_every_trades_own_entry_day_not_only_the_first(self):
+        # F4: 2026-06-10 is trade B's entry, an exact 0.00 at the mode of a
+        # panel whose whole caption is about its width.
+        x, fig = self._hist_x(self._daily_sequential())
+        assert 0.0 not in x
         assert any("mean" in (a.text or "").lower() for a in fig.layout.annotations)
 
-    def test_histogram_is_empty_state_with_one_day(self):
-        from src.render.hedge_figures import build_hedge_histogram_figure
+    def test_histogram_counts_only_market_marked_sessions(self):
+        # F6: a model mark prices the straddle at the carried-forward vol, so it
+        # is Black-Scholes-conforming by construction and narrows the measured
+        # width. -0.5 is the model-marked day; the settlement day (-1.0) stays.
+        x, _ = self._hist_x(self._daily_sequential())
+        assert x == [1.0, 2.0, -1.0]
+
+    def test_histogram_sums_concurrent_trades_within_one_session(self):
         import datetime as dt
-        one = pd.DataFrame({"date": [dt.date(2026, 6, 1)], "pnl_day": [0.0],
-                            "pnl_cum": [0.0], "n_open": [1]})
-        fig = build_hedge_histogram_figure(one)
+        d1, d2, d3 = (dt.date(2026, 6, i) for i in (1, 2, 3))
+        daily = pd.DataFrame({
+            "date": [d1, d2, d3, d2, d3],
+            "entry_date": [d1, d1, d1, d2, d2],
+            "pnl_day": [0.0, 1.0, 0.5, 0.0, 0.25],
+            "mark_source": ["market"] * 5,
+        })
+        x, _ = self._hist_x(daily)
+        assert x == pytest.approx([1.0, 0.75])   # d3 carries both live trades
+
+    def test_histogram_is_empty_state_when_nothing_is_market_marked(self):
+        import datetime as dt
+        from src.render.hedge_figures import build_hedge_histogram_figure
+        only_entries_and_models = pd.DataFrame({
+            "date": [dt.date(2026, 6, 1), dt.date(2026, 6, 2)],
+            "entry_date": [dt.date(2026, 6, 1)] * 2,
+            "pnl_day": [0.0, 1.0], "mark_source": ["market", "model"],
+        })
+        fig = build_hedge_histogram_figure(only_entries_and_models)
+        assert len(fig.data) == 0
+        assert fig.layout.annotations[0].text
+
+    def test_histogram_is_empty_state_with_no_trades(self):
+        from src.analytics.hedge_sim import DAILY_COLUMNS
+        from src.render.hedge_figures import build_hedge_histogram_figure
+        fig = build_hedge_histogram_figure(pd.DataFrame(columns=DAILY_COLUMNS))
         assert len(fig.data) == 0
 
 
@@ -885,6 +938,24 @@ class TestHedgeScatterAndStat:
         assert len(fig.data) == 0
         assert "2026-09-18" in fig.layout.annotations[0].text
 
+    def test_scatter_empty_state_does_not_promise_a_first_settlement_once_one_has_settled(self):
+        # F1: a `sparse` trade HAS reached expiry -- it is only unplottable.
+        # "No simulated trade has reached expiry yet. The first settles ..." was
+        # false on the real archive, where a 2024 trade settled two years ago.
+        import datetime as dt
+        from src.render.hedge_figures import build_hedge_scatter_figure
+        trades = self._settled(n=1)
+        trades.loc[0, "status"] = "sparse"
+        fig = build_hedge_scatter_figure(
+            trades, {"n": 0, "slope": float("nan"), "intercept": float("nan"),
+                     "r2": float("nan")},
+            next_settlement=dt.date(2026, 9, 18))
+        text = fig.layout.annotations[0].text
+        assert len(fig.data) == 0
+        assert "has reached expiry" in text and "reached expiry yet" not in text
+        assert "2026-09-18" not in text
+        assert "market-quoted marks" in text
+
     def test_scatter_with_one_point_draws_no_line(self):
         from src.render.hedge_figures import build_hedge_scatter_figure
         trades = self._settled(n=1)
@@ -898,9 +969,10 @@ class TestHedgeSummaryHtml:
     def _summary(self, **over):
         import datetime as dt
         base = {"n_trades": 1, "n_settled": 0, "n_open": 1, "n_sparse": 0,
-                "first_entry": dt.date(2026, 8, 14), "last_mark": dt.date(2026, 8, 28),
-                "cum_pnl": 1.25, "n_days": 11, "mean_daily_pnl": 0.12,
-                "sd_daily_pnl": 0.4, "market_mark_share": 1.0,
+                "n_reached_expiry": 0, "n_months_skipped": 0,
+                "first_entry": dt.date(2026, 8, 14),
+                "cum_pnl": 1.25, "n_days": 11, "market_mark_share": 1.0,
+                "dte_at_entry_min": 35, "dte_at_entry_max": 35,
                 "next_settlement": dt.date(2026, 9, 18),
                 "slope": float("nan"), "r2": float("nan")}
         return {**base, **over}
@@ -955,6 +1027,69 @@ class TestHedgeSummaryHtml:
         html = hedge_summary_html(self._summary(market_mark_share=0.82))
         assert "18%" in html or "82%" in html
 
+    def test_model_marked_share_does_not_assert_a_cause_the_data_contradicts(self):
+        # F2: the clause blamed "an expiry drops out of the stored chain in its
+        # final week" unconditionally. On the real archive 12 of 13 model marks
+        # come from a month holding NO chain at all, on any day of the trade.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(market_mark_share=0.48))
+        assert "52%" in html
+        assert "final week" not in html.lower()
+
+    def test_a_settled_but_sparse_trade_is_not_reported_as_nothing_finished(self):
+        # F1: the stat line contradicted itself -- "none has reached expiry yet"
+        # two sentences before "1 trade(s) are excluded from the scatter".
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=2, n_settled=0, n_sparse=1,
+                                                n_reached_expiry=1, n_open=1))
+        assert "none has reached expiry yet" not in html
+        assert "1 trade has reached expiry" in html
+        assert "2026-09-18" not in html      # not "the FIRST settles ..."
+
+    def test_nothing_finished_at_all_still_names_the_first_settlement(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_reached_expiry=0))
+        assert "none has reached expiry yet" in html
+        assert "2026-09-18" in html
+
+    def test_the_tenor_actually_traded_is_printed(self):
+        # F5: the caption promised "about 30 days out"; the rule delivers ~17.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_trades=2, dte_at_entry_min=17,
+                                                dte_at_entry_max=35))
+        assert "17–35 days from expiry" in html
+
+    def test_a_single_tenor_is_printed_without_a_range(self):
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(dte_at_entry_min=17, dte_at_entry_max=17))
+        assert "sold 17 days from expiry" in html
+
+    def test_skipped_months_are_disclosed(self):
+        # F11: June 2026 is skipped on the real archive (holiday-shifted monthly),
+        # and a silently dropped month is a selection the reader cannot see.
+        from src.render.stats import hedge_summary_html
+        html = hedge_summary_html(self._summary(n_months_skipped=1))
+        assert "1 month in the archive produced no trade" in html
+
+    def test_no_skipped_months_says_nothing(self):
+        from src.render.stats import hedge_summary_html
+        assert "produced no trade" not in hedge_summary_html(self._summary())
+
+    def test_the_disclosure_line_does_not_claim_a_mid_it_never_paid(self):
+        # F3: `compute_chain_iv` routes price_used to the mid only for LIVE rows;
+        # 27 of 28 stored chains are backfill, so every trade to date was entered
+        # and marked at the close. Mirror the "(close-based)" convention.
+        from src.render.stats import _SIM_LABEL, hedge_summary_html
+        assert "sold at the mid" not in _SIM_LABEL
+        assert "close-based" in _SIM_LABEL and "close" in _SIM_LABEL
+        for html in (hedge_summary_html(self._summary()),
+                     hedge_summary_html(self._summary(n_trades=0, n_open=0, n_days=0,
+                                                      first_entry=None,
+                                                      next_settlement=None,
+                                                      cum_pnl=float("nan")))):
+            assert "sold at the mid" not in html
+            assert "close-based" in html
+
 
 class TestP8Page:
     def test_q4_lists_the_three_p8_panels(self):
@@ -967,6 +1102,37 @@ class TestP8Page:
         for pid in ("P8a", "P8b", "P8c"):
             assert _PANEL_TITLES[pid]
             assert CAPTIONS[pid]
+
+    def test_p8a_caption_states_the_entry_rule_the_code_actually_runs(self):
+        # F5: "about 30 days out" is not what the code does. From the first
+        # session of a month the monthly ladder's nearest expiry is ~16-18 days.
+        from src.render.page import CAPTIONS
+        cap = CAPTIONS["P8a"]
+        assert "about 30 days out" not in cap
+        assert "monthly expiry nearest 30 days out" in cap
+        assert "16–18 days" in cap
+
+    def test_p8a_caption_admits_the_cumulative_line_keeps_model_marked_days(self):
+        # F6: P8a may keep every day -- a cumulative P&L that skipped days would
+        # be wrong -- but it must not claim more than it measures.
+        from src.render.page import CAPTIONS
+        assert "marked with our own model" in CAPTIONS["P8a"]
+
+    def test_p8b_caption_does_not_blame_the_vertical_spread_on_hedging_alone(self):
+        # F5: a 45-day trade earns ~1.6x the dollars of a 17-day one at the same
+        # edge, and the entry rule delivers both.
+        from src.render.page import CAPTIONS
+        cap = CAPTIONS["P8b"]
+        assert "√T" in cap and "45-day" in cap and "17-day" in cap
+
+    def test_p8c_caption_says_the_histogram_counts_only_quoted_sessions(self):
+        # F6: the caption calls the width "the direct measurement", so it has to
+        # say which days were measured.
+        from src.render.page import CAPTIONS
+        cap = CAPTIONS["P8c"]
+        assert "only the sessions the archive actually quotes" in cap
+        assert "opening day is dropped" in cap
+        assert "direct measurement" in cap      # the original claim is still made
 
     def test_scatter_caption_states_the_gamma_pnl_result_and_the_hedging_error(self):
         from src.render.page import CAPTIONS

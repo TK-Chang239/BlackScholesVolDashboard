@@ -120,8 +120,12 @@ def _quote(chain_iv: pd.DataFrame | None, expiry, strike: float) -> tuple[float,
 
 
 def simulate_trade(entry_date: dt.date, sel: dict, chains: dict, underlying: pd.DataFrame,
-                   r: float, q: float, cfg: dict) -> tuple[pd.DataFrame, dict]:
-    """Replay one short straddle from entry to settlement (or to the last stored session)."""
+                   r: float, q: float, cfg: dict) -> tuple[pd.DataFrame, dict] | None:
+    """Replay one short straddle from entry to settlement (or to the last stored session).
+
+    None when the entry session has no close in `underlying` -- there is no
+    spot to open against, so the month is skipped rather than raising.
+    """
     frequency = cfg["hedge_sim"]["hedge_frequency"]
     if frequency != "daily":
         raise ValueError(f"unsupported hedge_sim.hedge_frequency: {frequency}")
@@ -130,6 +134,12 @@ def simulate_trade(entry_date: dt.date, sel: dict, chains: dict, underlying: pd.
 
     u = underlying.sort_values("date")
     closes = dict(zip(u["date"], u["close"].astype(float)))
+    # A stored chain can carry a session the underlying history does not (a
+    # vendor gap, a late revision). Unguarded, that one absent close raised a
+    # KeyError out of the whole daily run; the replay is meant to tolerate
+    # exactly this data condition, so skip the month instead.
+    if entry_date not in closes:
+        return None
     days = [d for d in sorted(closes) if entry_date <= d <= expiry]
     # A holiday expiry never appears in the calendar, so settlement is the last
     # session at or before it -- and only once the calendar has actually reached it.
@@ -207,20 +217,32 @@ def simulate_trade(entry_date: dt.date, sel: dict, chains: dict, underlying: pd.
 
 
 def simulate(chains: dict, underlying: pd.DataFrame, r: float, q: float,
-             cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Replay every monthly trade the stored archive supports."""
-    trades, frames = [], []
+             cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """Replay every monthly trade the stored archive supports.
+
+    Third return value is the number of months whose first stored session could
+    not seed a trade -- no expiry near the target, no strike with both legs
+    solved, or no underlying close. A silently dropped month is a selection the
+    reader cannot see, and on the real archive it is not hypothetical: a
+    holiday-shifted monthly leaves the near expiry out of the ladder and the
+    whole month goes missing.
+    """
+    trades, frames, skipped = [], [], 0
     for entry in entry_sessions(list(chains)):
         sel = select_straddle(chains[entry], cfg)
-        if sel is None:
+        result = (simulate_trade(entry, sel, chains, underlying, r, q, cfg)
+                  if sel is not None else None)
+        if result is None:
+            skipped += 1
             continue
-        daily, trade = simulate_trade(entry, sel, chains, underlying, r, q, cfg)
+        daily, trade = result
         frames.append(daily)
         trades.append(trade)
     daily_all = (pd.concat(frames, ignore_index=True) if frames
                  else pd.DataFrame(columns=DAILY_COLUMNS))
     trades_df = pd.DataFrame(trades, columns=TRADE_COLUMNS)
-    return trades_df.sort_values("entry_date").reset_index(drop=True), daily_all
+    return (trades_df.sort_values("entry_date").reset_index(drop=True), daily_all,
+            skipped)
 
 
 def portfolio_daily(daily: pd.DataFrame) -> pd.DataFrame:
@@ -257,24 +279,40 @@ def fit_pnl_vs_edge(trades: pd.DataFrame) -> dict:
     return out
 
 
-def hedge_summary(trades: pd.DataFrame, port: pd.DataFrame, fit: dict) -> dict:
-    """Everything the page's stat line and status.json need, in one dict."""
+def hedge_summary(trades: pd.DataFrame, port: pd.DataFrame, fit: dict,
+                  n_months_skipped: int = 0) -> dict:
+    """Everything the page's stat line and status.json need, in one dict.
+
+    "Reached expiry" and "plottable" are DIFFERENT questions and the page needs
+    both. `sparse` is a sub-kind of settled, so `n_settled` alone -- which means
+    "settled AND carries enough market marks to plot" -- answered "has anything
+    finished?" with a no while a trade sat finished in the P&L. `n_reached_expiry`
+    answers that one; `n_settled` still gates the scatter and the fit.
+
+    `dte_at_entry_min/max` are here because the entry rule takes the monthly
+    expiry NEAREST the target, and a monthly ladder read from the first session
+    of a month rarely offers one near it: the realized tenor is bimodal, round-trip
+    P&L scales roughly with sqrt(T), and unreported that lands on the scatter as
+    unexplained vertical spread.
+    """
     counts = trades["status"].value_counts().to_dict() if not trades.empty else {}
     open_trades = trades[trades["status"] == "open"] if not trades.empty else trades
     marks = int(trades["n_days"].sum()) if not trades.empty else 0
+    n_settled = int(counts.get("settled", 0))
+    n_sparse = int(counts.get("sparse", 0))
+    dtes = trades["dte_at_entry"].dropna() if not trades.empty else None
     return {
         "n_trades": int(len(trades)),
-        "n_settled": int(counts.get("settled", 0)),
+        "n_settled": n_settled,
         "n_open": int(counts.get("open", 0)),
-        "n_sparse": int(counts.get("sparse", 0)),
+        "n_sparse": n_sparse,
+        "n_reached_expiry": n_settled + n_sparse,
+        "n_months_skipped": int(n_months_skipped),
         "first_entry": trades["entry_date"].min() if not trades.empty else None,
-        "last_mark": port["date"].max() if not port.empty else None,
         "cum_pnl": float(port["pnl_cum"].iloc[-1]) if not port.empty else float("nan"),
         "n_days": int(len(port)),
-        "mean_daily_pnl": (float(port["pnl_day"].iloc[1:].mean())
-                           if len(port) > 1 else float("nan")),
-        "sd_daily_pnl": (float(port["pnl_day"].iloc[1:].std(ddof=1))
-                         if len(port) > 2 else float("nan")),
+        "dte_at_entry_min": int(dtes.min()) if dtes is not None and len(dtes) else None,
+        "dte_at_entry_max": int(dtes.max()) if dtes is not None and len(dtes) else None,
         "market_mark_share": (float(trades["n_market_marks"].sum() / marks)
                               if marks else float("nan")),
         "next_settlement": (open_trades["expiry"].min() if len(open_trades) else None),
