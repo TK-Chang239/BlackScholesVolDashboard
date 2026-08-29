@@ -115,7 +115,7 @@ in [`SPEC.md`](SPEC.md).
 - [x] Phase 2 — data pipeline + history backfill
 - [x] Phase 3 — IV solver; smile + term-structure panels live on Pages
 - [x] Phase 4 — implied-vs-realized, sensitivity, Greeks panels
-- [ ] Phase 5 — skew series + parity checker
+- [x] Phase 5 — skew series + parity checker
 - [ ] Phase 6 — delta-hedged P&L simulation
 - [ ] Phase 7 — full daily automation, five unattended green runs
 - [ ] Phase 8 — findings written up; all ten learning-log questions answered
