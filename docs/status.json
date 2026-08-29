@@ -1,5 +1,5 @@
 {
-  "last_success_utc": "2026-08-29T03:49:43+00:00",
+  "last_success_utc": "2026-08-29T08:44:37+00:00",
   "snapshot_date": "2026-08-28",
   "source": "yfinance",
   "rows_stored": 1452,
@@ -10,11 +10,18 @@
   "atm_iv_30d": 0.118324,
   "daily_metrics_rows": 12,
   "history_since": "2024-09-03",
+  "skew_25d": 0.04003,
+  "parity_pairs": 654,
+  "parity_tradeable_violations": 132,
+  "implied_carry": 0.006933,
   "panels_rendered": [
     "P1",
     "P2",
     "P3",
     "P4",
-    "P5"
+    "P5",
+    "P6",
+    "P7",
+    "P9"
   ]
 }
