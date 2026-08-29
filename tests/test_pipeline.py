@@ -350,7 +350,11 @@ class TestPhase5Stage:
         status = run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
         # single-strike fixture: one parity pair, no skew bracket, no flat vol -> P9 empty
         assert status["parity_pairs"] == 1
+        assert status["parity_liquid_pairs"] == 1
         assert status["parity_tradeable_violations"] in (0, 1)
+        # one strike cannot bracket spot -> no forward, so nothing is calibratable
+        assert status["parity_tradeable_violations_fwd"] == 0
+        assert status["implied_carry"] is None and status["implied_carry_dte"] is None
         assert status["skew_25d"] is None
         m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
         assert "skew_25d" in m.columns and np.isnan(m["skew_25d"].iloc[0])
@@ -382,7 +386,10 @@ class TestPhase5Stage:
         status = run(FakeEODHD(), WideLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
         assert status["skew_25d"] == pytest.approx(0.0, abs=1e-6)   # flat vol -> no skew
         assert status["parity_pairs"] == 21 and status["parity_tradeable_violations"] == 0
+        assert status["parity_liquid_pairs"] == 21
+        assert status["parity_tradeable_violations_fwd"] == 0
         assert status["implied_carry"] == pytest.approx(0.0415 - 0.0098, abs=1e-6)
+        assert status["implied_carry_dte"] == 28      # only expiry available, below min_dte
         m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
         assert m["skew_25d_dte"].iloc[0] == 28
         page = (tmp_path / "docs" / "index.html").read_text()

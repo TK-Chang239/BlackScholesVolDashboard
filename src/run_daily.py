@@ -20,7 +20,7 @@ from src.analytics.daily_metrics import (
 from src.analytics.greeks_panel import compute_greeks_panel
 from src.analytics.iv_rv import iv_rv_series, iv_rv_summary, iv_rv_summary_html
 from src.analytics.model_vs_market import compute_model_vs_market
-from src.analytics.parity import carry_at_target, compute_parity, implied_carry, parity_summary
+from src.analytics.parity import carry_reference, compute_parity, implied_forward, parity_summary
 from src.analytics.sensitivity import compute_sensitivity
 from src.analytics.skew import compute_skew_25d
 from src.analytics.smile import compute_smile
@@ -141,8 +141,10 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     # ---- P7 parity + implied carry ----
     parity = compute_parity(chain_iv, risk_free_rate, dividend_yield)
     psum = parity_summary(parity)
-    carry = implied_carry(parity, spot, risk_free_rate)
-    carry_value, carry_dte = carry_at_target(carry, int(cfg["target_dte"]["atm_panel"]))
+    # Report carry from a long expiry: a fixed dollar of forward error divided
+    # by a three-week T looks like a huge rate error and says nothing.
+    forwards = implied_forward(parity, spot, risk_free_rate)
+    carry_value, carry_dte = carry_reference(forwards, min_dte=84)
 
     # ---- P9 model vs market at the same flat vol P1 uses ----
     mvm = compute_model_vs_market(chain_iv, sigma_p1, risk_free_rate, dividend_yield)
@@ -179,8 +181,11 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "skew_25d": (round(float(skew["skew_25d"]), 6)
                      if np.isfinite(skew["skew_25d"]) else None),
         "parity_pairs": psum["n_pairs"],
+        "parity_liquid_pairs": psum["n_liquid"],
         "parity_tradeable_violations": psum["n_tradeable_violations"],
+        "parity_tradeable_violations_fwd": psum["n_tradeable_violations_fwd"],
         "implied_carry": round(carry_value, 6) if np.isfinite(carry_value) else None,
+        "implied_carry_dte": int(carry_dte) if np.isfinite(carry_dte) else None,
         "panels_rendered": sorted(figures),
     }
     html = render_page(figures, status, extras=extras)

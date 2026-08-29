@@ -286,21 +286,33 @@ def _muted_heatmap_layers(z_all, z_hot, xcats, y, colorbar_title: str, zmin: flo
 
 
 def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
-    title = "Put-call parity — C − P versus S·e⁻ᵠᵀ − K·e⁻ʳᵀ, in dollars"
+    raw_title = "Put-call parity — C − P versus S·e⁻ᵠᵀ − K·e⁻ʳᵀ, in dollars"
     if parity.empty:
-        return _empty_figure(title, "No strike/expiry pairs with both a call and a put priced")
+        return _empty_figure(raw_title, "No strike/expiry pairs with both a call and a put priced")
     p = parity.copy()
+    # Headline the forward-calibrated deviation when there is one; fall back to
+    # the spot-based one when no expiry brackets spot (or on an old frame).
+    calibrated = "deviation_fwd" in p.columns and bool(p["deviation_fwd"].notna().any())
+    value_col = "deviation_fwd" if calibrated else "deviation"
+    viol_col = "tradeable_violation_fwd" if calibrated else "tradeable_violation"
+    title = ("Put-call parity — C − P against the market's own implied forward"
+             if calibrated else raw_title)
+    liquid = p["liquid"].astype(bool) if "liquid" in p.columns else True
     p["label"] = [_expiry_label(e, d) for e, d in zip(p["expiry"], p["dte"])]
     order = (p[["label", "dte"]].drop_duplicates().sort_values("dte")["label"].tolist())
-    z_all = p.pivot(index="strike", columns="label", values="deviation").reindex(columns=order)
-    hot = p["deviation"].where(p["tradeable_violation"])
+    z_all = p.pivot(index="strike", columns="label", values=value_col).reindex(columns=order)
+    hot = p[value_col].where(p[viol_col].astype(bool) & liquid)
     z_hot = p.assign(hot=hot).pivot(index="strike", columns="label", values="hot").reindex(columns=order)
-    lim = float(np.nanmax(np.abs(z_all.to_numpy(dtype=float)))) if z_all.size else 1.0
+    # Robust colour limit: one stale deep-ITM quote can be a $160 outlier and
+    # would otherwise flatten every real cell to white.
+    flat = np.abs(z_all.to_numpy(dtype=float).ravel())
+    finite = flat[np.isfinite(flat)]
+    lim = float(np.percentile(finite, 98, method="lower")) if finite.size else 1.0
     lim = max(lim, 0.05)
     fig = go.Figure()
     for layer in _muted_heatmap_layers(
             z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order, z_all.index.tolist(),
-            "C − P − parity, $", -lim, lim,
+            ("C − P − e⁻ʳᵀ(F − K), $" if calibrated else "C − P − parity, $"), -lim, lim,
             "%{x}<br>K %{y}: %{z:+.2f} $<extra></extra>"):
         fig.add_trace(layer)
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=spot, y1=spot,

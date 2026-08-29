@@ -12,8 +12,11 @@
   "history_since": "2024-09-03",
   "skew_25d": 0.04003,
   "parity_pairs": 654,
+  "parity_liquid_pairs": 585,
   "parity_tradeable_violations": 132,
-  "implied_carry": 0.006933,
+  "parity_tradeable_violations_fwd": 43,
+  "implied_carry": 0.032037,
+  "implied_carry_dte": 203,
   "panels_rendered": [
     "P1",
     "P2",

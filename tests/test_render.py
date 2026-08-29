@@ -343,9 +343,13 @@ class TestParityFigure:
         for expiry, dte in ((e1, 28), (e2, 84)):
             for k, dev, viol in ((740.0, 0.02, False), (770.0, -0.01, False), (800.0, 0.9, True)):
                 rows.append({"expiry": expiry, "dte": dte, "strike": k, "moneyness": k / 770.0,
-                             "call_price": 10.0, "put_price": 9.0, "lhs": 1.0, "rhs": 1.0 - dev,
-                             "deviation": dev, "spread": 0.3 if quoted else float("nan"),
-                             "tradeable_violation": viol if quoted else False})
+                             "call_price": 10.0, "put_price": 9.0,
+                             "call_oi": 500.0, "put_oi": 500.0, "liquid": True,
+                             "lhs": 1.0, "rhs": 1.0 - dev,
+                             "deviation": dev, "forward": 772.0, "deviation_fwd": dev,
+                             "spread": 0.3 if quoted else float("nan"),
+                             "tradeable_violation": viol if quoted else False,
+                             "tradeable_violation_fwd": viol if quoted else False})
         return pd.DataFrame(rows)
 
     def test_two_layers_and_hot_cells(self):
@@ -366,6 +370,34 @@ class TestParityFigure:
         hot = [t for t in fig.data if t.type == "heatmap"][1]
         assert all(v is None or v != v for row in hot.z for v in row)
         assert any("spreads unknown" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_outlier_does_not_flatten_the_scale(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p.loc[p.index[0], ["deviation", "deviation_fwd"]] = 160.0    # one dead quote
+        fig = build_parity_figure(p, 770.0)
+        faint = [t for t in fig.data if t.type == "heatmap"][0]
+        assert faint.zmax < 20.0        # scale set by the bulk, not the outlier
+
+    def test_non_liquid_violation_is_not_hot(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["liquid"] = False
+        fig = build_parity_figure(p, 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        assert all(v is None or v != v for row in hot.z for v in row)
+
+    def test_falls_back_to_spot_based_deviation_when_no_forward(self):
+        from src.render.figures import build_parity_figure
+        p = self._parity()
+        p["deviation_fwd"] = float("nan")
+        p["forward"] = float("nan")
+        p["tradeable_violation_fwd"] = False
+        fig = build_parity_figure(p, 770.0)
+        assert "implied forward" not in fig.layout.title.text
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9, 0.9])
 
     def test_empty(self):
         from src.analytics.parity import PARITY_COLUMNS
@@ -408,23 +440,41 @@ class TestModelVsMarketFigure:
 
 
 class TestParityStat:
-    def test_quoted_sentence(self):
+    def _summary(self, **over):
+        s = {"n_pairs": 420, "n_quoted": 420, "n_liquid": 400,
+             "n_tradeable_violations": 132, "n_tradeable_violations_fwd": 3,
+             "share_within_spread": 0.6857, "share_within_spread_fwd": 0.9929,
+             "max_abs_deviation": 160.28, "max_abs_deviation_fwd": 1.42}
+        s.update(over)
+        return s
+
+    def test_quoted_sentence_leads_with_the_calibrated_count(self):
         from src.render.stats import parity_summary_html
-        s = {"n_pairs": 420, "n_quoted": 420, "n_tradeable_violations": 3,
-             "share_within_spread": 0.9929, "max_abs_deviation": 1.42}
-        html = parity_summary_html(s, 0.0281, 21.0, 0.0383, 0.0098)
-        assert "420" in html and "3 tradeable" in html and "99.3%" in html
-        assert "2.81%" in html and "2.85%" in html and "21" in html
+        html = parity_summary_html(self._summary(), 0.0281, 84.0, 0.0383, 0.0098)
+        assert "400 liquid" in html and "3 tradeable violations" in html
+        assert "99.3%" in html and "forward is calibrated" in html
+        # the raw spot-based number stays visible and explained
+        assert "132" in html and "420" in html
+        assert "2.81%" in html and "2.85%" in html and "84-day" in html
+
+    def test_singular_violation_and_missing_share(self):
+        from src.render.stats import parity_summary_html
+        html = parity_summary_html(
+            self._summary(n_tradeable_violations_fwd=1, n_tradeable_violations=1,
+                          n_liquid=0, share_within_spread_fwd=float("nan")),
+            float("nan"), float("nan"), 0.0383, 0.0098)
+        assert "1 tradeable violation " in html and "nan" not in html.lower()
+        assert "carry" not in html.lower()
 
     def test_close_based_sentence(self):
         from src.render.stats import parity_summary_html
-        s = {"n_pairs": 400, "n_quoted": 0, "n_tradeable_violations": 0,
-             "share_within_spread": float("nan"), "max_abs_deviation": 2.0}
+        s = self._summary(n_quoted=0, n_tradeable_violations=0, n_tradeable_violations_fwd=0,
+                          share_within_spread=float("nan"),
+                          share_within_spread_fwd=float("nan"))
         html = parity_summary_html(s, float("nan"), float("nan"), 0.0383, 0.0098)
         assert "spreads unknown" in html and "carry" not in html.lower()
 
     def test_no_pairs(self):
         from src.render.stats import parity_summary_html
-        s = {"n_pairs": 0, "n_quoted": 0, "n_tradeable_violations": 0,
-             "share_within_spread": float("nan"), "max_abs_deviation": float("nan")}
+        s = self._summary(n_pairs=0, n_quoted=0, n_liquid=0)
         assert "No strike" in parity_summary_html(s, float("nan"), float("nan"), 0.04, 0.01)
