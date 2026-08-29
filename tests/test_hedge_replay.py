@@ -69,6 +69,51 @@ def test_extra_chains_are_visible_before_the_file_is_written(tmp_path):
     assert out["portfolio"]["date"].max() == today
 
 
+def test_extra_chains_override_disk_for_same_date(tmp_path):
+    """Verify extra_chains takes precedence over disk for the same date.
+
+    This tests the SPEC 2.1 failure policy: today's chain is computed before
+    being written to disk, so if a same-dated file already exists, the injected
+    version must override it. The test passes an already-stored date with
+    modified option prices (higher) and verifies the simulation uses the
+    injected version (higher entry price) not the disk version.
+    """
+    dates = [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(4)]
+    write_archive(tmp_path, dates, expiry=dt.date(2026, 7, 1), spot=100.0)
+
+    # Read the first date's chain from disk
+    first_date = dates[0]
+    stored = pd.read_parquet(tmp_path / "data" / "chains" / f"{first_date.isoformat()}.parquet")
+
+    # Modify it: increase option prices (straddle will cost more to enter)
+    modified = stored.assign(
+        close=lambda d: d["close"] + 5.0,
+        bid=lambda d: d["bid"] + 5.0,
+        ask=lambda d: d["ask"] + 5.0,
+        mid=lambda d: d["mid"] + 5.0,
+    )
+
+    from src.analytics.chain_iv import compute_chain_iv
+    solved_modified, _ = compute_chain_iv(modified, 0.04, 0.013)
+
+    # Run with disk version (no extra_chains)
+    out_disk = replay_hedge_sim(tmp_path, 0.04, 0.013, CFG)
+
+    # Run with injected version that has higher option prices
+    out_injected = replay_hedge_sim(tmp_path, 0.04, 0.013, CFG,
+                                    extra_chains={first_date: solved_modified})
+
+    # Both should have the same number of trades (one entry per valid session)
+    assert len(out_disk["trades"]) == len(out_injected["trades"]) == 1
+
+    # Entry straddle cost should be higher in injected version (higher option prices)
+    entry_straddle_injected = out_injected["trades"]["entry_straddle"].iloc[0]
+    entry_straddle_disk = out_disk["trades"]["entry_straddle"].iloc[0]
+    assert entry_straddle_injected > entry_straddle_disk, \
+        f"extra_chains version ({entry_straddle_injected}) should have higher " \
+        f"entry_straddle than disk version ({entry_straddle_disk})"
+
+
 def test_empty_archive_is_not_an_error(tmp_path):
     (tmp_path / "data" / "chains").mkdir(parents=True)
     pd.DataFrame({"date": [], "close": [], "adjusted_close": [], "volume": []}) \
