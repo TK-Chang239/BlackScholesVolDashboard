@@ -12,22 +12,28 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from src.analytics.annotations import load_annotations
 from src.analytics.chain_iv import compute_chain_iv
 from src.analytics.daily_metrics import (
     metric_columns, refresh_rv_columns, session_metrics_row, upsert_session,
 )
 from src.analytics.greeks_panel import compute_greeks_panel
 from src.analytics.iv_rv import iv_rv_series, iv_rv_summary, iv_rv_summary_html
+from src.analytics.model_vs_market import compute_model_vs_market
+from src.analytics.parity import carry_at_target, compute_parity, implied_carry, parity_summary
 from src.analytics.sensitivity import compute_sensitivity
+from src.analytics.skew import compute_skew_25d
 from src.analytics.smile import compute_smile
 from src.analytics.term_structure import compute_term_structure
 from src.data import storage
 from src.data.filters import filter_chain
 from src.render.figures import (
-    build_greeks_curves_figure, build_iv_rv_figure, build_sensitivity_figure,
+    build_greeks_curves_figure, build_iv_rv_figure, build_model_vs_market_figure,
+    build_parity_figure, build_sensitivity_figure, build_skew_figure,
     build_smile_figure, build_term_structure_figure,
 )
 from src.render.page import render_page
+from src.render.stats import parity_summary_html
 from src.render.tiles import greek_tiles_html
 
 STALENESS_DAYS = 5
@@ -108,10 +114,14 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     if prior_dates:
         tiles_prev, _ = compute_greeks_panel(prev_iv, risk_free_rate, dividend_yield, cfg)
 
+    # ---- P6 skew (into this session's daily_metrics row) ----
+    skew = compute_skew_25d(chain_iv, risk_free_rate, dividend_yield, cfg)
+
     # ---- daily_metrics: this session's row + RV refresh over the whole history ----
     metrics = storage.read_daily_metrics(root, metric_columns(cfg))
     metrics = upsert_session(
-        metrics, session_metrics_row(session_date, spot, source, ts_today, iv_stats, cfg), cfg)
+        metrics, session_metrics_row(session_date, spot, source, ts_today, iv_stats, cfg,
+                                     skew=skew), cfg)
     metrics = refresh_rv_columns(metrics, storage.read_underlying(root), cfg)
     this_row = metrics[metrics["date"] == session_date].iloc[0]
     atm_iv_30d = float(this_row["atm_iv_30d"])
@@ -128,15 +138,31 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     series = iv_rv_series(metrics, cfg)
     summary = iv_rv_summary(series)
 
+    # ---- P7 parity + implied carry ----
+    parity = compute_parity(chain_iv, risk_free_rate, dividend_yield)
+    psum = parity_summary(parity)
+    carry = implied_carry(parity, spot, risk_free_rate)
+    carry_value, carry_dte = carry_at_target(carry, int(cfg["target_dte"]["atm_panel"]))
+
+    # ---- P9 model vs market at the same flat vol P1 uses ----
+    mvm = compute_model_vs_market(chain_iv, sigma_p1, risk_free_rate, dividend_yield)
+
+    annotations = load_annotations(Path(root) / "data" / "annotations.yaml")
+
     figures = {
         "P1": build_sensitivity_figure(sens, cfg["sensitivity"]["bump"]),
         "P2": build_smile_figure(smile, spot),
         "P3": build_term_structure_figure(ts_today, ts_prev, previous_label=prev_label),
         "P4": build_greeks_curves_figure(curves, spot),
         "P5": build_iv_rv_figure(series, summary, cfg),
+        "P6": build_skew_figure(metrics, annotations),
+        "P7": build_parity_figure(parity, spot),
+        "P9": build_model_vs_market_figure(mvm, sigma_p1),
     }
     extras = {"P4": greek_tiles_html(tiles, tiles_prev, prev_label),
-              "P5": iv_rv_summary_html(summary)}
+              "P5": iv_rv_summary_html(summary),
+              "P7": parity_summary_html(psum, carry_value, carry_dte,
+                                        risk_free_rate, dividend_yield)}
 
     status = {
         "last_success_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -150,6 +176,11 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "atm_iv_30d": round(atm_iv_30d, 6) if np.isfinite(atm_iv_30d) else None,
         "daily_metrics_rows": int(len(metrics)),
         "history_since": (metrics["date"].iloc[0].isoformat() if len(metrics) else None),
+        "skew_25d": (round(float(skew["skew_25d"]), 6)
+                     if np.isfinite(skew["skew_25d"]) else None),
+        "parity_pairs": psum["n_pairs"],
+        "parity_tradeable_violations": psum["n_tradeable_violations"],
+        "implied_carry": round(carry_value, 6) if np.isfinite(carry_value) else None,
         "panels_rendered": sorted(figures),
     }
     html = render_page(figures, status, extras=extras)

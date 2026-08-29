@@ -231,7 +231,7 @@ class TestRenderStage:
         own_markup = page.replace(_BUNDLE.read_text(), "")
         assert "https://cdn.plot.ly" not in own_markup
         assert 0.0 <= status["iv_convergence"] <= 1.0
-        assert status["panels_rendered"] == ["P1", "P2", "P3", "P4", "P5"]
+        assert status["panels_rendered"] == ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P9"]
         # status still written last and consistent with the page
         on_disk = json.loads((tmp_path / "docs" / "status.json").read_text())
         assert on_disk == status
@@ -343,6 +343,51 @@ class TestRenderStage:
         assert (tmp_path / "docs" / "status.json").read_text() == status_before
         # and no new chain file landed for the failed session either
         assert not storage.chain_exists(TODAY + dt.timedelta(days=1), tmp_path)
+
+
+class TestPhase5Stage:
+    def test_status_and_page_carry_skew_parity_heatmap(self, tmp_path):
+        status = run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        # single-strike fixture: one parity pair, no skew bracket, no flat vol -> P9 empty
+        assert status["parity_pairs"] == 1
+        assert status["parity_tradeable_violations"] in (0, 1)
+        assert status["skew_25d"] is None
+        m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
+        assert "skew_25d" in m.columns and np.isnan(m["skew_25d"].iloc[0])
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "Put-call parity checker" in page and "Model-vs-market" in page
+        assert "25-delta skew" in page
+        assert "arrives in Phase 5" not in page
+        assert "arrives in Phase 6" in page              # Q4 still pending
+
+    def test_wide_chain_records_skew_and_zero_violations(self, tmp_path):
+        from src.models.black_scholes import bs_price
+
+        def wide_chain(spot, expiry, dte):
+            T = dte / 365.0
+            rows = []
+            for strike in [spot + d for d in range(-100, 101, 10)]:
+                for kind in ("call", "put"):
+                    price = float(bs_price(spot, strike, T, 0.0415, 0.20, 0.0098, kind))
+                    rows.append({"expiry": expiry, "strike": float(strike), "kind": kind,
+                                 "bid": price - 0.05, "ask": price + 0.05, "mid": price,
+                                 "close": price, "volume": 100, "open_interest": 500,
+                                 "vendor_iv": 0.20, "source": "yfinance"})
+            return pd.DataFrame(rows)
+
+        class WideLive:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return wide_chain(spot, dt.date(2026, 9, 25), 28)
+
+        status = run(FakeEODHD(), WideLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert status["skew_25d"] == pytest.approx(0.0, abs=1e-6)   # flat vol -> no skew
+        assert status["parity_pairs"] == 21 and status["parity_tradeable_violations"] == 0
+        assert status["implied_carry"] == pytest.approx(0.0415 - 0.0098, abs=1e-6)
+        m = pd.read_parquet(storage.daily_metrics_path(tmp_path))
+        assert m["skew_25d_dte"].iloc[0] == 28
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "0 tradeable violations" in page
+        assert "Vol points" in page                          # P9 toggle rendered
 
 
 class TestDailyMetricsStage:

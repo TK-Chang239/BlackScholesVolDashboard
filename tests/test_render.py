@@ -287,6 +287,18 @@ class TestPagePhase4:
         for pid in ("P1", "P2", "P3", "P4", "P5"):
             assert CAPTIONS[pid] in html
 
+    def test_phase5_panels_and_sections(self):
+        import plotly.graph_objects as go
+        from src.render.page import CAPTIONS, render_page
+        figs = {p: go.Figure() for p in ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P9")}
+        html = render_page(figs, self._status())
+        q2, q3, q5 = html.index("<h2>Q2."), html.index("<h2>Q3."), html.index("<h2>Q5.")
+        assert q2 < html.index("25-delta skew") < html.index("Model-vs-market") < q3
+        assert q5 < html.index("Put-call parity checker")
+        assert "arrives in Phase 5" not in html
+        for pid in ("P6", "P7", "P9"):
+            assert CAPTIONS[pid] in html
+
 
 class TestSkewFigure:
     def _metrics(self, dates, skews):
