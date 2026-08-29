@@ -321,3 +321,65 @@ class TestSkewFigure:
         m = self._metrics([dt.date(2026, 8, 24)], [float("nan")])
         fig = build_skew_figure(m, pd.DataFrame(columns=["date", "note"]))
         assert not fig.data and fig.layout.annotations
+
+
+class TestParityFigure:
+    def _parity(self, quoted=True):
+        import datetime as dt
+        e1, e2 = dt.date(2026, 9, 25), dt.date(2026, 11, 20)
+        rows = []
+        for expiry, dte in ((e1, 28), (e2, 84)):
+            for k, dev, viol in ((740.0, 0.02, False), (770.0, -0.01, False), (800.0, 0.9, True)):
+                rows.append({"expiry": expiry, "dte": dte, "strike": k, "moneyness": k / 770.0,
+                             "call_price": 10.0, "put_price": 9.0, "lhs": 1.0, "rhs": 1.0 - dev,
+                             "deviation": dev, "spread": 0.3 if quoted else float("nan"),
+                             "tradeable_violation": viol if quoted else False})
+        return pd.DataFrame(rows)
+
+    def test_two_layers_and_hot_cells(self):
+        from src.render.figures import build_parity_figure
+        fig = build_parity_figure(self._parity(), 770.0)
+        heat = [t for t in fig.data if t.type == "heatmap"]
+        assert len(heat) == 2
+        faint, hot = heat
+        assert faint.opacity == 0.3 and faint.showscale is False and hot.showscale is True
+        hot_vals = [v for row in hot.z for v in row if v is not None and v == v]
+        assert hot_vals == pytest.approx([0.9, 0.9])
+        assert list(faint.x) == ["2026-09-25 (28d)", "2026-11-20 (84d)"]
+        assert not any("spreads unknown" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_close_based_is_annotated_and_nothing_hot(self):
+        from src.render.figures import build_parity_figure
+        fig = build_parity_figure(self._parity(quoted=False), 770.0)
+        hot = [t for t in fig.data if t.type == "heatmap"][1]
+        assert all(v is None or v != v for row in hot.z for v in row)
+        assert any("spreads unknown" in (a.text or "") for a in fig.layout.annotations)
+
+    def test_empty(self):
+        from src.analytics.parity import PARITY_COLUMNS
+        from src.render.figures import build_parity_figure
+        fig = build_parity_figure(pd.DataFrame(columns=PARITY_COLUMNS), 770.0)
+        assert not fig.data and fig.layout.annotations
+
+
+class TestParityStat:
+    def test_quoted_sentence(self):
+        from src.render.stats import parity_summary_html
+        s = {"n_pairs": 420, "n_quoted": 420, "n_tradeable_violations": 3,
+             "share_within_spread": 0.9929, "max_abs_deviation": 1.42}
+        html = parity_summary_html(s, 0.0281, 21.0, 0.0383, 0.0098)
+        assert "420" in html and "3 tradeable" in html and "99.3%" in html
+        assert "2.81%" in html and "2.85%" in html and "21" in html
+
+    def test_close_based_sentence(self):
+        from src.render.stats import parity_summary_html
+        s = {"n_pairs": 400, "n_quoted": 0, "n_tradeable_violations": 0,
+             "share_within_spread": float("nan"), "max_abs_deviation": 2.0}
+        html = parity_summary_html(s, float("nan"), float("nan"), 0.0383, 0.0098)
+        assert "spreads unknown" in html and "carry" not in html.lower()
+
+    def test_no_pairs(self):
+        from src.render.stats import parity_summary_html
+        s = {"n_pairs": 0, "n_quoted": 0, "n_tradeable_violations": 0,
+             "share_within_spread": float("nan"), "max_abs_deviation": float("nan")}
+        assert "No strike" in parity_summary_html(s, float("nan"), float("nan"), 0.04, 0.01)

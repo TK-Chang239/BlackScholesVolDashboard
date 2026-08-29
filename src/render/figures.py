@@ -1,6 +1,7 @@
 """Plotly figure builders for the dashboard panels. Pure: frames in, Figure out."""
 from datetime import timedelta
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -259,4 +260,51 @@ def build_skew_figure(metrics: pd.DataFrame, annotations: pd.DataFrame) -> go.Fi
     fig.update_layout(title=title, **_LAYOUT)
     fig.update_yaxes(title_text="Vol points (put − call)", ticksuffix="")
     _apply_recent_range(fig, series["date"])
+    return fig
+
+
+def _expiry_label(expiry, dte) -> str:
+    return f"{expiry.isoformat()} ({int(dte)}d)"
+
+
+def _muted_heatmap_layers(z_all, z_hot, x, y, colorbar_title: str, zmin: float, zmax: float,
+                          hovertemplate: str, **subplot) -> list[go.Heatmap]:
+    """Two layers: every cell faint, then only the non-muted cells at full
+    opacity with the colorbar — SPEC 3 P7/P9's 'within-spread region muted'."""
+    common = dict(x=x, y=y, colorscale="RdBu", zmid=0, zmin=zmin, zmax=zmax,
+                  hoverongaps=False, hovertemplate=hovertemplate)
+    return [
+        go.Heatmap(z=z_all, opacity=0.3, showscale=False, name="within spread", **common),
+        go.Heatmap(z=z_hot, opacity=1.0, showscale=True, name="beyond spread",
+                   colorbar=dict(title=colorbar_title, **subplot), **common),
+    ]
+
+
+def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
+    title = "Put-call parity — C − P versus S·e⁻ᵠᵀ − K·e⁻ʳᵀ, in dollars"
+    if parity.empty:
+        return _empty_figure(title, "No strike/expiry pairs with both a call and a put priced")
+    p = parity.copy()
+    p["label"] = [_expiry_label(e, d) for e, d in zip(p["expiry"], p["dte"])]
+    order = (p[["label", "dte"]].drop_duplicates().sort_values("dte")["label"].tolist())
+    z_all = p.pivot(index="strike", columns="label", values="deviation").reindex(columns=order)
+    hot = p["deviation"].where(p["tradeable_violation"])
+    z_hot = p.assign(hot=hot).pivot(index="strike", columns="label", values="hot").reindex(columns=order)
+    lim = float(np.nanmax(np.abs(z_all.to_numpy(dtype=float)))) if z_all.size else 1.0
+    lim = max(lim, 0.05)
+    fig = go.Figure()
+    for layer in _muted_heatmap_layers(
+            z_all.to_numpy(dtype=float), z_hot.to_numpy(dtype=float), order, z_all.index.tolist(),
+            "C − P − parity, $", -lim, lim,
+            "%{x}<br>K %{y}: %{z:+.2f} $<extra></extra>"):
+        fig.add_trace(layer)
+    fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=spot, y1=spot,
+                  line=dict(color="grey", width=1, dash="dot"))
+    if p["spread"].notna().sum() == 0:
+        fig.add_annotation(text="close-based session — spreads unknown, tradeability not assessable",
+                           xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
+                           xanchor="left", font=dict(size=11, color="#555"))
+    fig.update_layout(title=title, **_LAYOUT)
+    fig.update_xaxes(title_text="Expiry")
+    fig.update_yaxes(title_text="Strike")
     return fig
