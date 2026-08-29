@@ -92,3 +92,21 @@ class TestPage:
         html = render_page({}, fake_status())
         assert "Phase" in html                       # 'arrives in Phase N' notes
         assert "<html" in html
+
+
+class TestSensitivityFigure:
+    def test_two_subplots_and_two_bar_traces_each(self):
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
+        fig = build_sensitivity_figure(compute_sensitivity(770.0, 0.12, 30, 0.04, 0.01, 0.20))
+        bars = [t for t in fig.data if t.type == "bar"]
+        assert len(bars) == 4                        # (down, up) x (argued, observed)
+        assert {t.xaxis for t in bars} == {"x", "x2"}
+        assert "Volatility" in "".join(str(t.y) for t in bars)
+
+    def test_nan_input_renders_annotation(self):
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
+        fig = build_sensitivity_figure(compute_sensitivity(770.0, float("nan"), 30, 0.04, 0.01, 0.2))
+        assert not [t for t in fig.data if t.type == "bar"]
+        assert fig.layout.annotations and "No" in fig.layout.annotations[0].text

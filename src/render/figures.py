@@ -1,6 +1,7 @@
 """Plotly figure builders for the dashboard panels. Pure: frames in, Figure out."""
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 _LAYOUT = dict(
     template="plotly_white",
@@ -61,4 +62,33 @@ def build_term_structure_figure(today: pd.DataFrame,
         title="ATM implied vol term structure",
         xaxis_title="Days to expiry", yaxis_title="ATM implied vol",
         yaxis_tickformat=".0%", **_LAYOUT)
+    return fig
+
+
+def _empty_figure(title: str, message: str) -> go.Figure:
+    fig = go.Figure()
+    fig.add_annotation(text=message, xref="paper", yref="paper", x=0.5, y=0.5,
+                       showarrow=False, font=dict(size=16))
+    fig.update_layout(title=title, **_LAYOUT)
+    return fig
+
+
+def build_sensitivity_figure(sens: pd.DataFrame) -> go.Figure:
+    title = "Which input moves the price? ±20% on each, ~30-DTE ATM call"
+    if sens.empty or sens["up_pct"].isna().all():
+        return _empty_figure(title, "No ATM implied vol for this session")
+    fig = make_subplots(
+        rows=1, cols=2, horizontal_spacing=0.14,
+        subplot_titles=("Inputs the market argues about", "Inputs everyone observes"))
+    for col, group in ((1, "argued"), (2, "observed")):
+        g = sens[sens["group"] == group].sort_values("span")   # biggest bar on top
+        for tag, color, name in (("down_pct", "#c44e52", "input −20%"),
+                                 ("up_pct", "#4c72b0", "input +20%")):
+            fig.add_trace(go.Bar(
+                y=g["label"], x=g[tag], orientation="h", name=name,
+                marker_color=color, showlegend=(col == 1),
+                hovertemplate="%{y}: %{x:+.1%}<extra>" + name + "</extra>"),
+                row=1, col=col)
+    fig.update_layout(title=title, barmode="overlay", **_LAYOUT)
+    fig.update_xaxes(title_text="Price change", tickformat="+.0%")
     return fig
