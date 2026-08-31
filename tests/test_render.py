@@ -1413,3 +1413,60 @@ class TestStalenessBanner:
     def test_page_without_today_argument_still_renders(self):
         from src.render.page import render_page
         assert "<h1>vol-lens</h1>" in render_page({}, self._status())
+
+
+class TestNarrowScreenFigures:
+    def _status(self):
+        return {"spot": 100.0, "snapshot_date": "2026-08-28", "source": "yfinance",
+                "iv_convergence": 0.99, "last_success_utc": "2026-08-29T00:00:00+00:00",
+                "rows_stored": 10}
+
+    def test_two_column_figures_are_marked(self):
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
+        sens = compute_sensitivity(100.0, 0.2, 30.0, 0.04, 0.013, 0.2)
+        fig = build_sensitivity_figure(sens, 0.2)
+        assert (fig.layout.meta or {}).get("stack_narrow") is True
+
+    def test_single_column_figures_are_not_marked(self):
+        from src.render.figures import build_smile_figure
+        fig = build_smile_figure(pd.DataFrame(), 100.0)
+        assert not (fig.layout.meta or {}).get("stack_narrow")
+
+    def test_marked_figures_get_the_wide_container_class(self):
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
+        from src.render.page import render_page
+        sens = compute_sensitivity(100.0, 0.2, 30.0, 0.04, 0.013, 0.2)
+        html = render_page({"P1": build_sensitivity_figure(sens, 0.2)}, self._status())
+        assert "class='figure figure-wide'" in html
+
+    def test_unmarked_figures_get_the_plain_container(self):
+        # A bare substring check on "figure-wide" would collide with the
+        # `.figure-wide` selector text the media rule always carries in _CSS
+        # (present on every page, marked figures or not) -- so this checks
+        # the specific container-class attribute, mirroring the positive
+        # assertion in test_marked_figures_get_the_wide_container_class.
+        from src.render.base import empty_figure
+        from src.render.page import render_page
+        html = render_page({"P2": empty_figure("P2", "x")}, self._status())
+        assert "class='figure'" in html
+        assert "class='figure figure-wide'" not in html
+
+    def test_the_media_rule_exists_and_needs_no_external_resource(self):
+        # The vendored bundle's own source carries the literal default string
+        # "https://cdn.plot.ly/" (a Chart Studio "edit this chart" link, never
+        # fetched) -- present on every page regardless of this feature, and
+        # already excluded the same way by TestPage.test_self_contained_no_
+        # external_refs. Strip it before the "no CDN" check, or the assertion
+        # both fails on unrelated pre-existing content and -- since it fails --
+        # forces pytest's differ to run difflib over the multi-hundred-KB page.
+        from src.render.base import empty_figure
+        from src.render.page import _BUNDLE, render_page
+        html = render_page({"P2": empty_figure("P2", "x")}, self._status())
+        own_markup = html.replace(_BUNDLE.read_text(), "")
+        assert "@media (max-width: 700px)" in html
+        assert ".figure-wide" in html
+        assert "min-width" in html
+        assert "<script src=" not in own_markup
+        assert "cdn." not in own_markup

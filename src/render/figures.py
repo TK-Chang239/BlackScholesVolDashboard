@@ -86,7 +86,7 @@ def build_sensitivity_figure(sens: pd.DataFrame, bump: float) -> go.Figure:
             if insidetextanchor:
                 bar_kwargs["insidetextanchor"] = insidetextanchor
             fig.add_trace(go.Bar(**bar_kwargs), row=1, col=col)
-    fig.update_layout(title=title, barmode="overlay", **_LAYOUT)
+    fig.update_layout(title=title, barmode="overlay", meta=dict(stack_narrow=True), **_LAYOUT)
     fig.update_xaxes(title_text="Price change", tickformat="+.0%")
     return fig
 
@@ -109,7 +109,7 @@ def build_greeks_curves_figure(curves: pd.DataFrame, spot: float) -> go.Figure:
                 row=1, col=col)
     for col in (1, 2):
         fig.add_vline(x=spot, line=dict(dash="dot", color="grey", width=1), row=1, col=col)
-    fig.update_layout(title=title, **_LAYOUT)
+    fig.update_layout(title=title, meta=dict(stack_narrow=True), **_LAYOUT)
     fig.update_xaxes(title_text="Strike")
     return fig
 
@@ -386,7 +386,7 @@ def build_model_vs_market_figure(mvm: pd.DataFrame, flat_vol: float) -> go.Figur
     vis_pct = [True] * 4 + [False] * 4
     vis_vol = [False] * 4 + [True] * 4
     fig.update_layout(
-        title=title, **_LAYOUT,
+        title=title, meta=dict(stack_narrow=True), **_LAYOUT,
         updatemenus=[dict(type="buttons", direction="left", x=0.0, y=1.14, xanchor="left",
                           yanchor="bottom", showactive=True,
                           buttons=[dict(label="% of market price", method="update",

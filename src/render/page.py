@@ -211,6 +211,12 @@ h1 { margin-top: 28px; } h2 { margin-top: 40px; border-bottom: 2px solid #eee;
 """ + TILES_CSS + ".stat { font-weight: 600; margin: 4px 0 8px; }\n" + (
     ".stale { background: #fff5f5; border: 1px solid #f0c0c0; border-radius: 6px;\n"
     "         padding: 10px 12px; margin: 12px 0; color: #8a2b2b; font-size: 0.92rem; }\n"
+) + (
+    "@media (max-width: 700px) {\n"
+    "  /* Two-column subplot figures compress to ~170px per panel on a phone, which\n"
+    "     is not a chart. Hold them at a readable width and let .figure scroll. */\n"
+    "  .figure-wide > div { min-width: 660px; }\n"
+    "}\n"
 )
 
 # Calendar days since the snapshot before the page admits it may be stale. Four
@@ -266,7 +272,8 @@ def render_page(figures: dict, status: dict, extras: dict | None = None,
             if pid in figures:
                 parts.append(f"<h3>{_PANEL_TITLES[pid]}</h3>")
                 parts.append((extras or {}).get(pid, ""))
-                parts.append("<div class='figure'>")
+                wide = " figure-wide" if (figures[pid].layout.meta or {}).get("stack_narrow") else ""
+                parts.append(f"<div class='figure{wide}'>")
                 parts.append(pio.to_html(
                     figures[pid], full_html=False, include_plotlyjs=False,
                     config={"responsive": True, "displaylogo": False}))
