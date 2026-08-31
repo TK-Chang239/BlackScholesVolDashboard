@@ -4,6 +4,7 @@ Self-contained: the vendored plotly.js bundle is inlined; no external
 requests at view time. Captions are part of the deliverable -- they carry
 the interview-prep story (SPEC 2.5) -- keep them verbatim.
 """
+import datetime as dt
 import math
 from pathlib import Path
 
@@ -166,8 +167,8 @@ CAPTIONS = {
         "noise: the wings are systematically rich against the flat-vol model, on "
         "both sides, day after day. A structured error means the world has a "
         "feature the model lacks (fat tails, volatility that moves), which is "
-        "exactly why Heston and SABR exist. This is the smile of the panel above, "
-        "re-expressed in price."
+        "exactly why Heston and SABR exist. This is the smile shown earlier in "
+        "this section, re-expressed in price."
     ),
 }
 
@@ -207,10 +208,46 @@ h1 { margin-top: 28px; } h2 { margin-top: 40px; border-bottom: 2px solid #eee;
 .placeholder { font-style: italic; } footer { margin-top: 48px;
      border-top: 1px solid #eee; padding-top: 12px; }
 .figure { width: 100%; overflow-x: auto; }
-""" + TILES_CSS + ".stat { font-weight: 600; margin: 4px 0 8px; }\n"
+""" + TILES_CSS + ".stat { font-weight: 600; margin: 4px 0 8px; }\n" + (
+    ".stale { background: #fff5f5; border: 1px solid #f0c0c0; border-radius: 6px;\n"
+    "         padding: 10px 12px; margin: 12px 0; color: #8a2b2b; font-size: 0.92rem; }\n"
+) + (
+    "@media (max-width: 700px) {\n"
+    "  /* Two-column subplot figures compress to ~170px per panel on a phone, which\n"
+    "     is not a chart. Hold them at a readable width and let .figure scroll. */\n"
+    "  .figure-wide > div { min-width: 660px; }\n"
+    "}\n"
+)
+
+# Calendar days since the snapshot before the page admits it may be stale. Four
+# clears a Friday-session page read on the following Tuesday; anything longer
+# means a scheduled run has actually been missed. This is a DISPLAY threshold and
+# is deliberately not run_daily's STALENESS_DAYS, which decides whether to run.
+STALE_AFTER_DAYS = 4
 
 
-def render_page(figures: dict, status: dict, extras: dict | None = None) -> str:
+def staleness_banner(status: dict, today: dt.date | None = None) -> str:
+    """A visible warning when the page is older than it should be, else ''.
+
+    SPEC 2.1 asks for staleness to be visible rather than silent. A fresh page
+    says nothing -- a banner that is always present is one nobody reads.
+    """
+    today = today or dt.date.today()
+    try:
+        snapshot = dt.date.fromisoformat(status["snapshot_date"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    days = (today - snapshot).days
+    if days <= STALE_AFTER_DAYS:
+        return ""
+    return (f"<p class='stale'>This page has not updated in {days} days — the "
+            f"most recent session it shows is <b>{snapshot.isoformat()}</b>. The "
+            "daily job has not published since then, so every number below is "
+            "that session's, not today's.</p>")
+
+
+def render_page(figures: dict, status: dict, extras: dict | None = None,
+                 today: dt.date | None = None) -> str:
     bundle = _BUNDLE.read_text()
     parts = [
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
@@ -220,6 +257,7 @@ def render_page(figures: dict, status: dict, extras: dict | None = None) -> str:
         f"<script>{bundle}</script>",
         "</head><body>",
         "<h1>vol-lens</h1>",
+        staleness_banner(status, today),
         "<p class='meta'>A daily reality-check of the Black-Scholes model "
         "against the live US options market. Underlying: <b>SPY</b> · "
         f"spot <b>{status['spot']:.2f}</b> · session "
@@ -234,7 +272,8 @@ def render_page(figures: dict, status: dict, extras: dict | None = None) -> str:
             if pid in figures:
                 parts.append(f"<h3>{_PANEL_TITLES[pid]}</h3>")
                 parts.append((extras or {}).get(pid, ""))
-                parts.append("<div class='figure'>")
+                wide = " figure-wide" if (figures[pid].layout.meta or {}).get("stack_narrow") else ""
+                parts.append(f"<div class='figure{wide}'>")
                 parts.append(pio.to_html(
                     figures[pid], full_html=False, include_plotlyjs=False,
                     config={"responsive": True, "displaylogo": False}))

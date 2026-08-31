@@ -1,0 +1,63 @@
+name: daily
+
+# 30 1 * * 2-6 UTC ~= 21:30 ET Mon-Fri: after the US close and after EOD data
+# settles. Tue-Sat in UTC covers Mon-Fri US sessions (SPEC 2.1).
+on:
+  schedule:
+    - cron: "30 1 * * 2-6"
+  workflow_dispatch:
+
+# A run commits to main. Never let two runs race for the same push, and never
+# cancel one midway -- a cancelled job could leave the repo half-updated.
+concurrency:
+  group: daily-publish
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # run_daily sets no explicit network request timeout, so a stuck fetch could
+    # otherwise run for GitHub's 6-hour job default. Because cancel-in-progress
+    # is false above, that would hold the daily-publish concurrency group for
+    # the full 6 hours, blocking every later scheduled run AND any manual
+    # recovery dispatch queued behind it. A normal run (install, test, fetch,
+    # render, commit) takes a few minutes; 30 gives generous headroom above
+    # that while still failing fast enough for same-day manual recovery.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # SPEC 4: a broken model never publishes. This runs BEFORE the pipeline,
+      # and a failure here stops the job with nothing written.
+      - name: Run tests
+        run: pytest -q
+
+      # SPEC 2.1 failure policy: run_daily computes everything before it writes
+      # anything and raises on failure, so a non-zero exit here simply leaves
+      # yesterday's dashboard live. Do not wrap this in error handling.
+      - name: Run the daily pipeline
+        env:
+          EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: python -m src.run_daily
+
+      - name: Commit the new snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data docs
+          if git diff --staged --quiet; then
+            echo "nothing changed - not committing"
+            exit 0
+          fi
+          git commit -m "chore: daily snapshot $(date -u +%Y-%m-%d) [skip ci]"
+          git push

@@ -1376,3 +1376,116 @@ class TestP8Page:
         assert "Phase 6" not in html          # the Q4 placeholder is gone
         for pid in ("P8a", "P8b", "P8c"):
             assert _PANEL_TITLES[pid] in html
+
+
+class TestStalenessBanner:
+    def _status(self, snapshot="2026-08-28"):
+        return {"spot": 100.0, "snapshot_date": snapshot, "source": "yfinance",
+                "iv_convergence": 0.99, "last_success_utc": "2026-08-29T00:00:00+00:00",
+                "rows_stored": 10}
+
+    def test_fresh_page_shows_no_banner(self):
+        import datetime as dt
+        from src.render.page import staleness_banner
+        assert staleness_banner(self._status(), today=dt.date(2026, 8, 29)) == ""
+
+    def test_weekend_gap_is_not_stale(self):
+        import datetime as dt
+        from src.render.page import staleness_banner
+        # Friday session read on Monday: three calendar days, zero missed sessions.
+        assert staleness_banner(self._status("2026-08-28"), today=dt.date(2026, 8, 31)) == ""
+
+    def test_a_stale_page_says_so_with_the_date_and_the_gap(self):
+        import datetime as dt
+        from src.render.page import staleness_banner
+        html = staleness_banner(self._status("2026-08-28"), today=dt.date(2026, 9, 8))
+        assert "2026-08-28" in html
+        assert "11 days" in html
+        assert "class='stale'" in html
+
+    def test_banner_is_rendered_into_the_page(self):
+        import datetime as dt
+        from src.render.page import render_page
+        html = render_page({}, self._status("2026-08-28"), today=dt.date(2026, 9, 8))
+        assert "class='stale'" in html
+        assert html.index("class='stale'") < html.index("Q1.")
+
+    def test_page_without_today_argument_still_renders(self):
+        from src.render.page import render_page
+        assert "<h1>vol-lens</h1>" in render_page({}, self._status())
+
+
+class TestNarrowScreenFigures:
+    def _status(self):
+        return {"spot": 100.0, "snapshot_date": "2026-08-28", "source": "yfinance",
+                "iv_convergence": 0.99, "last_success_utc": "2026-08-29T00:00:00+00:00",
+                "rows_stored": 10}
+
+    def test_two_column_figures_are_marked(self):
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import (
+            build_greeks_curves_figure, build_model_vs_market_figure, build_sensitivity_figure,
+        )
+        sens = compute_sensitivity(100.0, 0.2, 30.0, 0.04, 0.013, 0.2)
+        fig = build_sensitivity_figure(sens, 0.2)
+        assert (fig.layout.meta or {}).get("stack_narrow") is True
+
+        # A non-empty frame for both: their `.empty` branch returns
+        # `empty_figure`, which carries no `meta` at all -- an empty DataFrame
+        # here would never exercise the marked path this test exists to guard.
+        curves = pd.DataFrame({
+            "kind": ["call", "put"], "strike": [760.0, 760.0], "moneyness": [0.987, 0.987],
+            "delta": [0.6, -0.4], "gamma": [0.02, 0.02]})
+        fig = build_greeks_curves_figure(curves, 770.0)
+        assert (fig.layout.meta or {}).get("stack_narrow") is True
+
+        mvm = pd.DataFrame([{
+            "kind": "call", "expiry": dt.date(2026, 9, 25), "dte": 28, "strike": 800.0,
+            "moneyness": 800.0 / 770.0, "market": 10.0, "model": 9.65,
+            "deviation_pct": 0.035, "deviation_vol": 0.01, "quoted": True, "within_spread": False,
+        }])
+        fig = build_model_vs_market_figure(mvm, 0.12)
+        assert (fig.layout.meta or {}).get("stack_narrow") is True
+
+    def test_single_column_figures_are_not_marked(self):
+        from src.render.figures import build_smile_figure
+        fig = build_smile_figure(pd.DataFrame(), 100.0)
+        assert not (fig.layout.meta or {}).get("stack_narrow")
+
+    def test_marked_figures_get_the_wide_container_class(self):
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
+        from src.render.page import render_page
+        sens = compute_sensitivity(100.0, 0.2, 30.0, 0.04, 0.013, 0.2)
+        html = render_page({"P1": build_sensitivity_figure(sens, 0.2)}, self._status())
+        assert "class='figure figure-wide'" in html
+
+    def test_unmarked_figures_get_the_plain_container(self):
+        # A bare substring check on "figure-wide" would collide with the
+        # `.figure-wide` selector text the media rule always carries in _CSS
+        # (present on every page, marked figures or not) -- so this checks
+        # the specific container-class attribute, mirroring the positive
+        # assertion in test_marked_figures_get_the_wide_container_class.
+        from src.render.base import empty_figure
+        from src.render.page import render_page
+        html = render_page({"P2": empty_figure("P2", "x")}, self._status())
+        assert "class='figure'" in html
+        assert "class='figure figure-wide'" not in html
+
+    def test_the_media_rule_exists_and_needs_no_external_resource(self):
+        # The vendored bundle's own source carries the literal default string
+        # "https://cdn.plot.ly/" (a Chart Studio "edit this chart" link, never
+        # fetched) -- present on every page regardless of this feature, and
+        # already excluded the same way by TestPage.test_self_contained_no_
+        # external_refs. Strip it before the "no CDN" check, or the assertion
+        # both fails on unrelated pre-existing content and -- since it fails --
+        # forces pytest's differ to run difflib over the multi-hundred-KB page.
+        from src.render.base import empty_figure
+        from src.render.page import _BUNDLE, render_page
+        html = render_page({"P2": empty_figure("P2", "x")}, self._status())
+        own_markup = html.replace(_BUNDLE.read_text(), "")
+        assert "@media (max-width: 700px)" in html
+        assert ".figure-wide" in html
+        assert "min-width" in html
+        assert "<script src=" not in own_markup
+        assert "cdn." not in own_markup

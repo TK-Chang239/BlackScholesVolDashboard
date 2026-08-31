@@ -36,7 +36,7 @@
 1. GitHub Pages publishes from the **repo root** of `main`, not from `/docs`. So `https://tk-chang239.github.io/BlackScholesVolDashboard/` renders `README.md` through Jekyll, and the dashboard lives at `…/docs/`. The README's own "Live dashboard" link points at the root — i.e. at the README itself. A visitor who clicks it goes nowhere.
 2. The README already claims the dashboard is "Updated automatically after each US close via GitHub Actions." No `daily.yml` exists. The claim is false until this phase lands.
 
-**Mobile, assessed from the CSS rather than guessed:** `body` is `max-width: 960px; padding: 0 16px` and the Greek tiles already use `grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))`, so both reflow correctly. `.figure` is `width: 100%; overflow-x: auto` and every chart is rendered with Plotly's `responsive: true`. The real problem is the four figures built with `make_subplots(rows=1, cols=2, …)` — at a 358 px content width each panel gets ~170 px, which is not a chart. They are at `src/render/figures.py:69` (term structure), `:98` (sensitivity tornado), `:353` (model-vs-market), and the Greeks curves figure. Those need to stack on a narrow screen.
+**Mobile, assessed from the CSS rather than guessed:** `body` is `max-width: 960px; padding: 0 16px` and the Greek tiles already use `grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))`, so both reflow correctly. `.figure` is `width: 100%; overflow-x: auto` and every chart is rendered with Plotly's `responsive: true`. The real problem is the three figures built with `make_subplots(rows=1, cols=2, …)` — at a 358 px content width each panel gets ~170 px, which is not a chart. They are at `src/render/figures.py:69` (sensitivity tornado), `:98` (Greeks curves), and `:353` (model-vs-market); `build_term_structure_figure` builds a single-panel `go.Figure()` with no `make_subplots` call and is not one of them. Those three need to stack on a narrow screen.
 
 ---
 
@@ -370,40 +370,66 @@ git commit -m "feat: warn on the page when the daily job has stopped publishing"
 - Test: `tests/test_render.py` (append)
 
 **Interfaces:**
-- Consumes: the four figures built with `make_subplots(rows=1, cols=2, …)`.
-- Produces: a `data-stack-narrow="1"` marker on those figures' containers and a small inline script in `page.py` that restacks them below a breakpoint.
+- Consumes: the three figures built with `make_subplots(rows=1, cols=2, …)`.
+- Produces: `meta=dict(stack_narrow=True)` on those three figures, a `figure-wide` container class emitted by `render_page` for them, and a `@media` rule in `_CSS`.
 
-Plotly cannot re-flow a subplot grid responsively on its own. The fix is a vendored inline script — no external dependency, so the page stays self-contained — that walks the marked figures and calls `Plotly.relayout` to convert each two-column grid into two stacked rows when the viewport is narrow, and back when it is not.
+**Why CSS and not JavaScript.** The obvious fix is a script that restacks the grid on resize. It does not work: `make_subplots` does **not** emit a `grid` object — it writes explicit axis domains. Verified on the real sensitivity figure:
+
+```
+has 'grid' key: False
+xaxis.domain  = [0.0, 0.43]      yaxis.domain  = [0.0, 1.0]
+xaxis2.domain = [0.57, 1.0]      yaxis2.domain = [0.0, 1.0]
+```
+
+So a `Plotly.relayout(gd, {'grid.rows': 2})` would silently do nothing while a test that merely asserted the script's presence still passed. Swapping the domains by hand is possible but must also move the subplot-title annotations and any colorbar, and its failure mode is a silently squashed chart.
+
+The CSS approach cannot fail silently: below the breakpoint the marked figures get a `min-width`, Plotly (already `responsive: true`) draws at that width, and the existing `.figure { overflow-x: auto }` turns the excess into a swipe. The chart stays at a readable size instead of being compressed into an unreadable one.
 
 - [ ] **Step 1: Write the failing test**
 
 Append to `tests/test_render.py`:
 
 ```python
-class TestNarrowScreenRelayout:
+class TestNarrowScreenFigures:
+    def _status(self):
+        return {"spot": 100.0, "snapshot_date": "2026-08-28", "source": "yfinance",
+                "iv_convergence": 0.99, "last_success_utc": "2026-08-29T00:00:00+00:00",
+                "rows_stored": 10}
+
     def test_two_column_figures_are_marked(self):
-        import pandas as pd
-        from src.render.figures import build_sensitivity_figure
         from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
         sens = compute_sensitivity(100.0, 0.2, 30.0, 0.04, 0.013, 0.2)
         fig = build_sensitivity_figure(sens, 0.2)
-        assert fig.layout.meta and fig.layout.meta.get("stack_narrow") is True
+        assert (fig.layout.meta or {}).get("stack_narrow") is True
 
     def test_single_column_figures_are_not_marked(self):
-        import pandas as pd
         from src.render.figures import build_smile_figure
         fig = build_smile_figure(pd.DataFrame(), 100.0)
         assert not (fig.layout.meta or {}).get("stack_narrow")
 
-    def test_page_carries_the_relayout_script_and_no_external_source(self):
+    def test_marked_figures_get_the_wide_container_class(self):
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
         from src.render.page import render_page
+        sens = compute_sensitivity(100.0, 0.2, 30.0, 0.04, 0.013, 0.2)
+        html = render_page({"P1": build_sensitivity_figure(sens, 0.2)}, self._status())
+        assert "class='figure figure-wide'" in html
+
+    def test_unmarked_figures_get_the_plain_container(self):
         from src.render.base import empty_figure
-        status = {"spot": 100.0, "snapshot_date": "2026-08-28", "source": "yfinance",
-                  "iv_convergence": 0.99, "last_success_utc": "2026-08-29T00:00:00+00:00",
-                  "rows_stored": 10}
-        html = render_page({"P1": empty_figure("P1", "x")}, status)
-        assert "stack_narrow" in html
-        assert "matchMedia" in html
+        from src.render.page import render_page
+        html = render_page({"P2": empty_figure("P2", "x")}, self._status())
+        assert "class='figure'" in html
+        assert "figure-wide" not in html
+
+    def test_the_media_rule_exists_and_needs_no_external_resource(self):
+        from src.render.base import empty_figure
+        from src.render.page import render_page
+        html = render_page({"P2": empty_figure("P2", "x")}, self._status())
+        assert "@media (max-width: 700px)" in html
+        assert ".figure-wide" in html
+        assert "min-width" in html
         assert "<script src=" not in html
         assert "cdn." not in html
 ```
@@ -413,62 +439,38 @@ class TestNarrowScreenRelayout:
 Run: `.venv/bin/python -m pytest tests/test_render.py -q -k NarrowScreen`
 Expected: FAIL — `fig.layout.meta` is None.
 
-- [ ] **Step 3: Mark the four figures**
+- [ ] **Step 3: Mark the three figures**
 
-In `src/render/figures.py`, each of the four builders that calls `make_subplots(rows=1, cols=2, …)` gets `meta=dict(stack_narrow=True)` added to its `update_layout(...)` call. Do not change any other layout property. The four are the term-structure figure, the sensitivity tornado, the Greeks curves figure and the model-vs-market heatmap — find them by searching for `make_subplots(rows=1, cols=2`.
+In `src/render/figures.py`, find the builders that call `make_subplots(rows=1, cols=2` — there are three: the sensitivity tornado, the Greeks curves figure and the model-vs-market heatmap. `build_term_structure_figure` is a single-panel `go.Figure()` with no `make_subplots` call and is not one of them. Add `meta=dict(stack_narrow=True)` to each one's existing `update_layout(...)` call. Change no other layout property, and do not touch the two `make_subplots` calls that are not two-column (`specs=[[{"secondary_y": True}]]` is a single cell).
 
-- [ ] **Step 4: Add the relayout script**
+- [ ] **Step 4: Emit the wide container and add the media rule**
 
-In `src/render/page.py`, add the script constant and append it to `parts` immediately before `"</body></html>"`:
+In `src/render/page.py`, the render loop currently appends `"<div class='figure'>"` before each figure. Make that class conditional on the figure's marker:
 
 ```python
-# Plotly cannot re-flow a subplot grid on resize, so the four two-column figures
-# are restacked here. Vendored inline: the page must stay self-contained.
-_STACK_SCRIPT = """
-<script>
-(function () {
-  var narrow = window.matchMedia('(max-width: 700px)');
-  function apply() {
-    document.querySelectorAll('.js-plotly-plot').forEach(function (gd) {
-      if (!(gd.layout && gd.layout.meta && gd.layout.meta.stack_narrow)) return;
-      var stacked = narrow.matches;
-      Plotly.relayout(gd, {
-        'grid.rows': stacked ? 2 : 1,
-        'grid.columns': stacked ? 1 : 2,
-        height: stacked ? 720 : 460
-      });
-    });
-  }
-  if (narrow.addEventListener) { narrow.addEventListener('change', apply); }
-  else if (narrow.addListener) { narrow.addListener(apply); }
-  apply();
-})();
-</script>
-"""
+                wide = " figure-wide" if (figures[pid].layout.meta or {}).get("stack_narrow") else ""
+                parts.append(f"<div class='figure{wide}'>")
+```
+
+and append to `_CSS`:
+
+```python
+"@media (max-width: 700px) {\n"
+"  /* Two-column subplot figures compress to ~170px per panel on a phone, which\n"
+"     is not a chart. Hold them at a readable width and let .figure scroll. */\n"
+"  .figure-wide > div { min-width: 660px; }\n"
+"}\n"
 ```
 
 - [ ] **Step 5: Verify**
 
-Run: `.venv/bin/python -m pytest -q` — Expected: PASS.
-
-Then render a page offline and confirm by eye that nothing regressed at desktop width:
-
-```bash
-.venv/bin/python -c "
-from pathlib import Path
-h = Path('docs/index.html').read_text()
-print('script present:', 'stack_narrow' in h)
-print('no external src:', '<script src=' not in h)
-"
-```
-
-(The rendered page only gains the script after Task 6's real run; this check is for after that run.)
+Run: `.venv/bin/python -m pytest -q` — Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/render/figures.py src/render/page.py tests/test_render.py
-git commit -m "feat: stack two-column charts on narrow screens"
+git commit -m "feat: hold two-column charts at a readable width on narrow screens"
 ```
 
 ---

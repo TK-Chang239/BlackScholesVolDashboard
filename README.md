@@ -6,10 +6,10 @@ Every trading day, an automated pipeline pulls the end-of-day SPY option
 chain, prices every contract with a Black-Scholes implementation written
 from scratch, backs out implied volatilities, and publishes a static
 dashboard comparing what the model says to what the market does. The gap
-between the two — measured daily, in nine panels — is the subject of this
+between the two — measured daily, across eleven panels — is the subject of this
 project.
 
-**Live dashboard:** https://tk-chang239.github.io/BlackScholesVolDashboard/ ·
+**Live dashboard:** https://tk-chang239.github.io/BlackScholesVolDashboard/docs/ ·
 Updated automatically after each US close via GitHub Actions.
 
 ---
@@ -117,7 +117,7 @@ in [`SPEC.md`](SPEC.md).
 - [x] Phase 4 — implied-vs-realized, sensitivity, Greeks panels
 - [x] Phase 5 — skew series + parity checker
 - [x] Phase 6 — delta-hedged P&L simulation
-- [ ] Phase 7 — full daily automation, five unattended green runs
+- [x] Phase 7 — full daily automation, five unattended green runs
 - [ ] Phase 8 — findings written up; all ten learning-log questions answered
 
 ## Findings

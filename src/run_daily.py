@@ -3,6 +3,10 @@
 The ONLY place vendors are composed. Failure policy: any unrecoverable
 error raises, leaving no chain file, docs/index.html, or status.json
 untouched, so the Action exits nonzero and yesterday's dashboard stays live.
+`_check_overwrite_shrink` is part of that same policy: it raises, before any
+write, if a freshly filtered chain would replace an already-stored one with
+far fewer rows (e.g. an off-hours run against a thin book), so a degraded
+chain can never silently overwrite a good one in the archive.
 """
 import datetime as dt
 import sys
@@ -42,6 +46,44 @@ from src.render.tiles import greek_tiles_html
 
 STALENESS_DAYS = 5
 CARRY_MIN_DTE = 84       # below this a dollar of forward error is a huge "rate" error
+
+# `data/chains/` is not a cache: P8's hedge replay and every panel that reads a
+# prior session depend on it holding the best data this pipeline ever captured
+# for that date. A freshly filtered chain that keeps fewer than half the rows
+# of the one already on disk is treated as off-hours/degraded data (e.g. a
+# pre-market run where almost nothing has a bid) rather than a legitimate
+# update, and publishing it would silently corrupt the stored history instead
+# of just one day's page. Half is a deliberately blunt line: ordinary
+# day-to-day liquidity swings do not cut a chain's row count in half, but a
+# closed book does.
+MIN_CHAIN_RETENTION = 0.5
+
+
+def _check_overwrite_shrink(chain: pd.DataFrame, session_date: dt.date, root: Path) -> None:
+    """Refuse to replace a stored chain with a drastically smaller one.
+
+    Runs in the compute stage, before any write (SPEC 2.1): raising here
+    leaves the stored chain, daily_metrics, page and status all untouched, so
+    the job exits non-zero and yesterday's dashboard stays live. Only applies
+    when a chain for `session_date` is already on disk -- a first-ever write
+    for a session has nothing to compare against and must proceed.
+    """
+    if not storage.chain_exists(session_date, root):
+        return
+    stored_rows = len(pd.read_parquet(storage.chain_path(session_date, root)))
+    new_rows = len(chain)
+    if new_rows < MIN_CHAIN_RETENTION * stored_rows:
+        raise RuntimeError(
+            f"refusing to overwrite the stored chain for session "
+            f"{session_date.isoformat()}: the freshly filtered chain has "
+            f"{new_rows} rows vs {stored_rows} currently stored in "
+            f"data/chains/{session_date.isoformat()}.parquet, below the "
+            f"{MIN_CHAIN_RETENTION:.0%} retention floor. This usually means "
+            "the pipeline ran off-hours against a thin book. Re-run after the "
+            "session closes so a fuller chain is captured, or if this smaller "
+            "chain is genuinely what you want kept, delete the stored file "
+            "first to accept the loss deliberately."
+        )
 
 
 def _carry_statistic(carry: dict) -> str | None:
@@ -113,6 +155,8 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
 
     if chain.empty:
         raise RuntimeError("both sources produced an empty filtered chain")
+
+    _check_overwrite_shrink(chain, session_date, root)
 
     # Get all status values from providers BEFORE any writes (failure policy: no partial writes).
     risk_free_rate = eodhd.get_risk_free_rate()
