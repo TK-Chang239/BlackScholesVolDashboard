@@ -26,6 +26,325 @@ private list.
 10. Why does discrete daily delta hedging leave P&L noise, and what does
     daily hedged P&L ≈ ½ Γ S² (σ²_realized − σ²_implied) dt actually say?
 
+## The ten answers
+
+Each answer below states its conclusion first, before any qualification;
+cites the panel, log entry, test, or probe script that produced it; gives
+the number together with the sample it came from; and says what that
+evidence does not establish. Q7 and Q10 are already answered at length
+elsewhere in this log — their entries here are short and point there
+rather than repeat the derivation.
+
+### Q1 — Everyone has the same formula. Why does anyone disagree about prices?
+
+Because volatility is the one Black-Scholes input nobody can observe, and
+among the inputs a trader can actually disagree about, it moves price the
+most. The "2026-08-28 — Sensitivity: which inputs matter" entry (panel:
+Input sensitivity; `src/analytics/sensitivity.py`;
+`test_sigma_dominates_the_argued_group_and_rate_is_tiny`) bumped every
+Black-Scholes input ±20% on a real 30-day ATM SPY call ($11.316, spot
+769.35) and measured price spans of **36.63%** for σ, **4.45%** for r and
+**1.17%** for q — σ's span is **8.2×** the risk-free rate's and **31.4×**
+the dividend yield's, the three inputs a desk actually forms an opinion
+about. Spot and time move price by even more in absolute terms (S's span
+is 1374.58%), but nobody disagrees about a spot print or a calendar date,
+which is a different question — the reason `compute_sensitivity` reports
+the two groups on separate axes rather than one. This does not establish
+that volatility disagreement is the *only* source of price disagreement
+(transaction costs, inventory and model choice also vary by desk); it
+establishes that among BSM's five inputs, volatility is the one that is
+simultaneously large and a matter of opinion.
+
+### Q2 — Where does the market ignore the model, and why?
+
+The market prices a different implied volatility for every strike and
+every expiry, when Black-Scholes says one number should price all of
+them — the IV smile/skew, ATM term structure, skew time-series and
+model-vs-market heatmap panels (P2, P3, P6, P9) measure this daily. On
+the 2026-08-27 chain (the "2026-08-28 — Phase 3: the first page" entry),
+the front-month (22 DTE) smile ran from **~50.5%** IV at a deep-OTM put
+(K=540, moneyness 0.70) through **~11.3–11.4%** near the money to
+**~21%** at the symmetric deep-OTM call (K=905) — the put wing rising
+about 2.4× steeper per unit moneyness than the call wing. The
+"2026-08-29 — Model vs market" entry quantifies why this is structural
+rather than noise: pricing the whole 2026-08-28 chain (1,452 quoted
+contracts) at one flat vol lands inside the bid-ask on only **269 of them
+(18.5%)**, and the deviation is a smooth, monotone function of both
+moneyness (+19.85 vol points at 0.80–0.90 moneyness down to −0.32 near
+the money, front expiry) and maturity (+20.98 points at 21 DTE decaying
+to +13.16 at 203 DTE for the same OTM-put wing;
+`test_skewed_market_is_rich_in_the_put_wing` is the synthetic version of
+this test). This does not identify which alternative model (stochastic
+vol, jumps, local vol) is correct, only that a single constant σ cannot
+be, and that the failure is a structured surface rather than sampling
+noise.
+
+### Q3 — Is implied volatility a prediction, or a price?
+
+Mostly a price: it has run above what subsequently happened often enough,
+and by enough, to look like a premium collected for bearing risk rather
+than an unbiased forecast. `iv_rv_summary` (`src/analytics/iv_rv.py`),
+run against the full 64-session `data/daily_metrics.parquet` archive
+(2024-09-03 through 2026-08-28), reports **37 evaluable days at 81%** —
+the ~30-day ATM implied vol exceeded its own subsequent 30-day realized
+vol on 30 of those 37 sessions. This supersedes the Phase 4 log entry's
+number, "100% of 1 evaluable days," which that entry itself flagged as
+"a fact about one day, not a result" and explicitly declined to
+generalize from. The caution was right, and it has now been superseded
+by data rather than contradicted by it — that is the better lesson,
+better than either number read alone. This does not establish that
+implied vol has *no* forecasting content (a persistently positive spread
+is also consistent with a real forecast plus a risk premium layered on
+top, and the two are not separated here), and 37 days is still one
+calm-to-quiet market stretch, not a full volatility cycle.
+
+### Q4 — The model claims you can hedge an option perfectly. Can you?
+
+No: discrete daily re-hedging leaves real, sometimes large, P&L noise
+even when the average trade is profitable. Of the three simulated
+monthly short-straddle trades in the "2026-08-29 — Phase 6: the hedging
+argument" entry's archive-wide table, two have run to expiry and
+settled — **+$2.77** (2026-07-01 entry, 2.40 vol points of edge) and
+**+$0.57** (2026-08-03 entry, 1.44 points of edge) per share — and the
+July trade gave back half its peak P&L, **−$2.76**, in the single
+session its final hedge was set from a stale model delta. `fit_pnl_vs_edge`
+draws a line through those two settled trades (slope $2.296 per vol
+point, R² = 1.0; `status.json: hedge_slope_per_vol_point` /
+`hedge_r2`), but a line through two points fits perfectly by arithmetic
+whether or not a real relationship exists, and the page's own stat line
+says so directly rather than claim one: "2 trades have settled — too few
+to read a line through, so the fit is drawn but not claimed." This does
+not establish that IV−RV edge predicts hedged P&L; it establishes that
+even a positive-edge trade carries real hedging error, sized here in
+dollars per share.
+
+### Q5 — Given all these flaws, why does every trading desk still use Black-Scholes?
+
+Because two of the reasons it survives don't depend on it being right:
+its model-free relationships hold almost exactly once quote artifacts are
+removed, and it supplies the shared vol-quoting language every other
+panel on this dashboard uses. The put-call parity checker
+(`src/analytics/parity.py`; the "2026-08-29 — Put-call parity: the
+model-free check" and "...A ruler that does not wobble" entries), on the
+2026-08-28 live chain, starts at **132 of 654** quoted pairs (20.2%)
+failing beyond their own combined bid-ask spread, falls to **42 of 585**
+liquid pairs (7.2%) once each expiry's own forward is calibrated from its
+near-the-money quotes (removing a ~$1 stale-spot artifact, not a model
+assumption), and falls again to **6 of 585** (1.03%) once the
+volatility-free American early-exercise bound is applied to the
+qualifying in-the-money puts — a model-free identity holding almost
+exactly. The second reason is not separately measured here: every panel
+on this dashboard, including this one, reports in vol points rather than
+dollars, which is the "shared language" claim in practice rather than a
+tested one. This does not establish that Black-Scholes prices any single
+option correctly — the Q2 answer above shows plainly that it does not —
+only that the parts of it that don't depend on a volatility guess survive
+contact with real quotes.
+
+### Q6 — Why is vega largest at-the-money and near zero deep ITM/OTM — and what does that geometry do to anything that tries to invert price into vol?
+
+A penny of price error moves a deep-OTM implied vol about **8.5×**
+further than an at-the-money one, and that is a mechanical consequence of
+vega's shape, not a claim that needs a liquidity control.
+`scripts/probe_vega_inversion.py`, Step 2.2, on the 2026-08-28 chain
+(1,435 converged contracts) measures Δσ = Δprice/vega directly: a
+one-cent price error moves the median deep-OTM implied vol **0.0788**
+vol points against **0.0092** at the money, because vega itself (sharing
+gamma's φ(d1) kernel — "2026-08-27 — The Greeks") falls from **0.7329**
+per vol point at the 21-DTE ATM strike (K=769, spot 769.35) to as little
+as ~1e-11–1e-36 per vol point at the chain filter's moneyness edges
+(Step 1). That identity needs no liquidity control to trust. The probe's
+separate test — whether IV-solver convergence itself falls by vega
+decile — corroborates the story but is confounded on this chain and is
+reported as such: Spearman(vega decile, median open interest) = **0.915**,
+all 10 of the lowest decile's 10 failures sit in its lowest
+open-interest tercile while the other two terciles converge 100%, an
+open-interest-held-fixed band (200–800 OI) collapses the convergence
+gradient across every decile represented, and all **17** chain-wide
+non-convergent contracts carry open interest ≤ 270. This does **not**
+establish that vega geometry alone, independent of thin markets, drives
+non-convergence — this session cannot separate the two — only that the
+price-to-vol conditioning identity is real and large.
+
+### Q7 — What exactly breaks in Newton–Raphson for deep-OTM options, and how does the Brent safeguard rescue it?
+
+Answered at length in the "2026-08-27 — Inverting the formula: implied
+vol" entry, which documents the real failure this project hit rather
+than a hypothetical one: `test_deep_otm_tiny_vega_does_not_return_garbage`
+(S=100, K=300, T=0.05, true σ=0.30) produces a true price of ~1.4e-60,
+indistinguishable from 0.0 in float64, so a convergence check evaluated
+before a vega check declared victory on iteration one and returned a
+fabricated σ=1e-4. The fix was a one-line reorder — check vega against a
+floor derived from the accuracy target (vega ≥ tol/target_accuracy) and
+release to Brent before checking convergence — plus a matching post-check
+on Brent's own root, since in that same corner `bs_price(σ)` is
+bit-identical across most of the domain and any σ inside that plateau is
+a spurious root. See that entry for the full derivation, including the
+second, subtler failure (a vega=8.8e-10 point that slipped past an
+under-derived 1e-10 floor and erred by 0.15 in σ) it also documents.
+
+### Q8 — Does implied vol differ when solved from bid vs mid vs ask, and by how much across the chain?
+
+Yes, and the spread is small at the money but comparable in size to the
+effects this dashboard reports once quotes get thin. `scripts/
+probe_quote_iv_spread.py`, on the only session in the 64-session archive
+with real two-sided quotes (2026-08-28, source=yfinance; the other 63 are
+close-based backfill with no bid/ask at all, confirmed by the probe's own
+census step), finds median `iv_ask − iv_bid` = **0.139 vol points**, 90th
+percentile **5.499**, over n=1,274 contracts where all three prices
+solved. That is small next to the dashboard's own 25-delta skew (4.003
+points) and IV-minus-RV spread (1.43 points) — small enough that neither
+finding is quote-noise in disguise, near the money. It is not small
+everywhere: the deep-ITM bucket's median spread is **4.26 points** (p90
+9.32) — comparable to, not smaller than, those two headline effects —
+and the width there is a flat dollar step (median $3.220, IQR
+[$3.200, $3.280]) invariant across a ~40× premium range ($8.57 to
+$334.33), not a value that scales with the contract's own price.
+Cross-checking against Phase 5's independent put-call-parity liquidity
+work (`src/analytics/parity.py`; the probe reproduces its 2026-08-28
+numbers exactly — 654 pairs, 69 illiquid, 132 violations, 45
+illiquid-and-violating), **24.4%** (41/168) of the wide deep-ITM
+contracts are the same zero-open-interest dead quotes Phase 5 found
+independently, 28.6% belong to a flagged parity violation, and the other
+**75.6%** carry real, if thin, open interest — so the flat step is not
+confined to dead markets. This does not establish that every panel's
+numbers survive this noise (the deep-ITM wing plainly does not carry a
+trustworthy IV), only that the near-the-money numbers most panels are
+built from do.
+
+### Q9 — How large is the error from pricing American-style SPY options with a European model, and where does it concentrate?
+
+This project bounds and locates the error rather than measures it,
+because measuring it rigorously needs an American pricer (a binomial
+tree or free-boundary PDE) this phase did not build. `scripts/
+probe_american_error.py` gives a **lower bound** from the parity residue
+— a median of **~2.8 vol points** over the 36 parity violations the
+derived, volatility-free early-exercise bound explains (2026-08-28
+chain, `src/analytics/parity.py`) — and a **theoretical ceiling** from
+that same bound's own dollar value: **$3.812–$15.163**, or **3.575–9.585
+vol points**, across the moderate/near_money/deep_itm_put buckets
+(excluding deep_otm_put, whose 18.983-point figure is a low-vega
+conversion artifact, not a real dollar effect). Neither number is the
+true American-minus-European gap: the measured lower bound sits below
+the theoretical ceiling, which is consistent, but the true gap between
+them requires the pricer this project did not build. The dividend half
+is measured the same way. `q` is a network-fetched scalar this repo does
+not store per-date, so the probe rebuilds an ex-dividend detector from
+`close`/`adjusted_close` divergence in `data/underlying.parquet`, finding
+135 events over 1993–2026 (91-day median spacing, matching SPY's known
+quarterly cadence) and that **35.7%** of the archive's checkable 30-day
+forward windows (15 of 42) contain one. On one representative contract
+(K=755, 2026-06-15 session, spanning the 2026-06-18 ex-dividend date),
+swapping a discrete $1.92 dividend for the continuous q at the same
+solved σ moves the put **+$0.61** (+0.684 vol points) and the call
+**−$0.66** (−0.748 vol points) — the expected sign on both legs. This
+does not establish the size of the true American premium on any specific
+contract, and it does not build the pricer that would.
+
+### Q10 — Why does discrete daily delta hedging leave P&L noise, and what does daily hedged P&L ≈ ½ Γ S² (σ²_realized − σ²_implied) dt actually say?
+
+Answered at length in the "2026-08-29 — Phase 6: the hedging argument,
+and what one round trip is worth" entry, which derives the identity from
+a delta-hedged portfolio's own second-order Taylor expansion: the Δ dS
+term cancels the instant H is set to Δ, and substituting the model's own
+theta collapses the remainder to ½ Γ S² (σ²_implied − σ²_realized) dt for
+a short position (sign flipped from SPEC's canonical long-option form, on
+purpose, and noted as such). Theta is rent the model charges for holding
+gamma; gamma against the day's actual squared move is what pays it. The
+same entry's exact P&L identity — `pv_t − pv_{t−1} == pnl_interest +
+pnl_dividend + pnl_hedge + pnl_option − pnl_cost`, worst residual
+1.29e-13 across 38 stepped sessions — is what makes the derivation
+checkable rather than a comment; a broken hedge or a miscounted cash flow
+would otherwise look just as plausible on the page. See that entry for
+the full derivation and its measured caveat: the panel reports the
+*total* P&L, not the gamma-only term the identity isolates, and on one
+trade's nine market-quoted sessions the vega term (−$0.57) was measured
+larger in magnitude than the gamma term (−$0.09).
+
+### A pattern across these ten answers: the shape was always right, the mechanism never was
+
+Five times while building the answers above, this phase asserted a
+confident causal mechanism for a measured effect, and five times a second
+pass re-running the numbers found the measured shape was correct and the
+offered mechanism was not. Naming it once, together, because each
+instance is documented at its own site and nowhere else connects them.
+
+1. **Deep-ITM quote spreads (Q8).** First told as a graded story — market
+   makers pricing near-intrinsic contracts wider "driven by proximity to
+   intrinsic," implying width scales with how deep the contract sits.
+   Measuring the width directly showed a flat step instead: median
+   $3.220, IQR [$3.200, $3.280], invariant across a ~40× premium range
+   ($8.57–$334.33), ~0.42% of spot regardless. `8321701` → `074558f`.
+2. **The vega-decile spread inversion (Q8, same correction).** The
+   highest-vega decile's larger median spread than the lowest-vega
+   decile's was explained by one mechanism, the $0.01 tick floor
+   cancelling tiny-vega noise. That holds for the OTM half (decile 0 is
+   117/128 deep-OTM contracts pinned at the $0.01 tick) but not the ITM
+   half, whose flat $3.22 step — not the tick floor — is what actually
+   drives the inversion. `8321701` → `074558f`.
+3. **A moderate correlation cited as evidence of flatness (Q8).** The
+   corrected script still read corr(width, mid) = 0.456 inside the ITM
+   band and called the width-vs-premium relationship "largely absent."
+   r² ≈ 0.21 is a real, moderate positive relationship and cannot support
+   that reading; the load-bearing evidence for flatness was always the
+   median/IQR invariance above it, not this correlation. `074558f` →
+   `d9d3221`.
+4. **Convergence failures attributed to vega geometry (Q6)**, rather than
+   the illiquidity it is confounded with on this chain: decile-level
+   Spearman(vega decile, median open interest) = 0.915; all 10 of the
+   lowest decile's failures sit in its own lowest open-interest tercile
+   while the other two terciles converge 100%; an open-interest-held-
+   fixed band (200–800 OI) collapses the convergence gradient across
+   every decile represented; all 17 chain-wide non-convergent contracts
+   carry open interest ≤ 270. `34b0e83` → `f6748d2`.
+5. **In a sibling of the commit written to fix that class of error a
+   fourth time (Q9).** `probe_american_error.py`'s theory-ceiling bracket
+   credited the vol-points low end (3.575) to the "moderate" bucket — but
+   moderate is only the *dollar* low end ($3.812); the vol-points low end
+   is `near_money`, a smaller dollar ceiling divided by that bucket's
+   larger near-the-money vega. `3d4f3dd` → `d9d3221`.
+
+The measured shape survived every one of the five — nothing above was a
+wrong number. What kept being wrong was the mechanism: a claim about
+*why* the shape looks that way, which a median, an IQR, a correlation
+coefficient or a convergence rate does not by itself license. Measuring
+a step is not the same act as explaining one, and this phase kept
+collapsing the two.
+
+Every one of the five catches came from a second pass re-running the
+numbers against the printed claim; none came from the pass that produced
+the claim. That is an observation about process, not about anyone's
+care — the same author wrote the claim and, later, the correction, each
+time. A wrong sum tends to be self-checking; a plausible-sounding
+mechanism is not, because it doesn't look wrong from the inside.
+
+Instance 5 is the one worth sitting with. It did not land inside
+instance 4's fix — `f6748d2` and `3d4f3dd` are two single-file commits
+six seconds apart — but it landed in the same batch of corrections,
+written in the same sitting, minutes after this phase had named the
+failure mode out loud. Knowing a mistake happens does not confer
+immunity to making it again immediately; the only thing that caught it
+was the same second-pass discipline that caught the first four.
+
+There is a sixth instance, and it was in the paragraph you are reading.
+Its first draft said instance 5 landed *inside* instance 4's fix. That
+is a stronger claim than the history supports, and it came from this
+project's own working notes rather than from the commits — nobody
+checked `git show --stat` on the two SHAs until a reviewer did, and the
+two commits touch different files. The shape was right: instance 5 did
+follow instance 4 almost immediately. The mechanism — one commit
+containing both — was inferred and stated as fact. Six for six, and
+this one inside the passage arguing that the sixth would happen.
+
+What this costs a project like this one: the whole deliverable is
+evidence-backed answers, each cited to a script, a stored file, or a log
+line that says the number. A wrong mechanism is more dangerous to that
+deliverable than a wrong number, because it sits on top of a number that
+is actually correct and inherits that number's credibility — a review
+that checks only the cited figure will wave it through. All five were
+caught before this document shipped. The finding is which pass did the
+catching, and it was never the first one.
+
 ## Phase 0 findings — EODHD data access
 
 ### 2026-08-28 — Verification run (`scripts/verify_eodhd.py`)
