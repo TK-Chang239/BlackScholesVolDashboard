@@ -36,7 +36,7 @@
 1. GitHub Pages publishes from the **repo root** of `main`, not from `/docs`. So `https://tk-chang239.github.io/BlackScholesVolDashboard/` renders `README.md` through Jekyll, and the dashboard lives at `…/docs/`. The README's own "Live dashboard" link points at the root — i.e. at the README itself. A visitor who clicks it goes nowhere.
 2. The README already claims the dashboard is "Updated automatically after each US close via GitHub Actions." No `daily.yml` exists. The claim is false until this phase lands.
 
-**Mobile, assessed from the CSS rather than guessed:** `body` is `max-width: 960px; padding: 0 16px` and the Greek tiles already use `grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))`, so both reflow correctly. `.figure` is `width: 100%; overflow-x: auto` and every chart is rendered with Plotly's `responsive: true`. The real problem is the four figures built with `make_subplots(rows=1, cols=2, …)` — at a 358 px content width each panel gets ~170 px, which is not a chart. They are at `src/render/figures.py:69` (term structure), `:98` (sensitivity tornado), `:353` (model-vs-market), and the Greeks curves figure. Those need to stack on a narrow screen.
+**Mobile, assessed from the CSS rather than guessed:** `body` is `max-width: 960px; padding: 0 16px` and the Greek tiles already use `grid-template-columns: repeat(auto-fit, minmax(150px, 1fr))`, so both reflow correctly. `.figure` is `width: 100%; overflow-x: auto` and every chart is rendered with Plotly's `responsive: true`. The real problem is the three figures built with `make_subplots(rows=1, cols=2, …)` — at a 358 px content width each panel gets ~170 px, which is not a chart. They are at `src/render/figures.py:69` (sensitivity tornado), `:98` (Greeks curves), and `:353` (model-vs-market); `build_term_structure_figure` builds a single-panel `go.Figure()` with no `make_subplots` call and is not one of them. Those three need to stack on a narrow screen.
 
 ---
 
@@ -370,8 +370,8 @@ git commit -m "feat: warn on the page when the daily job has stopped publishing"
 - Test: `tests/test_render.py` (append)
 
 **Interfaces:**
-- Consumes: the four figures built with `make_subplots(rows=1, cols=2, …)`.
-- Produces: `meta=dict(stack_narrow=True)` on those four figures, a `figure-wide` container class emitted by `render_page` for them, and a `@media` rule in `_CSS`.
+- Consumes: the three figures built with `make_subplots(rows=1, cols=2, …)`.
+- Produces: `meta=dict(stack_narrow=True)` on those three figures, a `figure-wide` container class emitted by `render_page` for them, and a `@media` rule in `_CSS`.
 
 **Why CSS and not JavaScript.** The obvious fix is a script that restacks the grid on resize. It does not work: `make_subplots` does **not** emit a `grid` object — it writes explicit axis domains. Verified on the real sensitivity figure:
 
@@ -439,9 +439,9 @@ class TestNarrowScreenFigures:
 Run: `.venv/bin/python -m pytest tests/test_render.py -q -k NarrowScreen`
 Expected: FAIL — `fig.layout.meta` is None.
 
-- [ ] **Step 3: Mark the four figures**
+- [ ] **Step 3: Mark the three figures**
 
-In `src/render/figures.py`, find the builders that call `make_subplots(rows=1, cols=2` — there are four: the term-structure figure, the sensitivity tornado, the Greeks curves figure and the model-vs-market heatmap. Add `meta=dict(stack_narrow=True)` to each one's existing `update_layout(...)` call. Change no other layout property, and do not touch the two `make_subplots` calls that are not two-column (`specs=[[{"secondary_y": True}]]` is a single cell).
+In `src/render/figures.py`, find the builders that call `make_subplots(rows=1, cols=2` — there are three: the sensitivity tornado, the Greeks curves figure and the model-vs-market heatmap. `build_term_structure_figure` is a single-panel `go.Figure()` with no `make_subplots` call and is not one of them. Add `meta=dict(stack_narrow=True)` to each one's existing `update_layout(...)` call. Change no other layout property, and do not touch the two `make_subplots` calls that are not two-column (`specs=[[{"secondary_y": True}]]` is a single cell).
 
 - [ ] **Step 4: Emit the wide container and add the media rule**
 

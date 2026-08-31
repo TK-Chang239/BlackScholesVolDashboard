@@ -3,6 +3,10 @@
 The ONLY place vendors are composed. Failure policy: any unrecoverable
 error raises, leaving no chain file, docs/index.html, or status.json
 untouched, so the Action exits nonzero and yesterday's dashboard stays live.
+`_check_overwrite_shrink` is part of that same policy: it raises, before any
+write, if a freshly filtered chain would replace an already-stored one with
+far fewer rows (e.g. an off-hours run against a thin book), so a degraded
+chain can never silently overwrite a good one in the archive.
 """
 import datetime as dt
 import sys

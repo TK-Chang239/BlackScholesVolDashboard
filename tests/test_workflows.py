@@ -43,12 +43,28 @@ class TestDailyWorkflow:
         for value in step["env"].values():
             assert value.startswith("${{ secrets."), value
         assert "${{ secrets." not in "".join(s.get("run", "") for s in steps)
+        # A secret wired into some other step's `env:` block would slip past the
+        # two checks above (they only look at `run:` text and at this one step's
+        # own `env`), so also confirm no OTHER step's env references a secret.
+        for other in steps:
+            if other is step:
+                continue
+            for value in (other.get("env") or {}).values():
+                assert "${{ secrets." not in str(value), (other, value)
 
     def test_job_can_write_and_will_not_overlap_itself(self):
         doc = load(DAILY)
         assert doc["jobs"]["daily"]["permissions"]["contents"] == "write"
         assert doc["concurrency"]["group"]
         assert doc["concurrency"]["cancel-in-progress"] is False
+
+    def test_job_has_a_timeout_well_short_of_the_default(self):
+        # run_daily sets no request timeout, and cancel-in-progress is false, so
+        # a stuck job would otherwise hold the daily-publish concurrency group
+        # for GitHub's 6-hour default -- blocking every later scheduled run and
+        # any manual recovery dispatch queued behind it.
+        timeout = load(DAILY)["jobs"]["daily"]["timeout-minutes"]
+        assert 0 < timeout < 360
 
     def test_commit_is_conditional_on_a_real_change(self):
         steps = load(DAILY)["jobs"]["daily"]["steps"]

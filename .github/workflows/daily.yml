@@ -18,6 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # run_daily sets no explicit network request timeout, so a stuck fetch could
+    # otherwise run for GitHub's 6-hour job default. Because cancel-in-progress
+    # is false above, that would hold the daily-publish concurrency group for
+    # the full 6 hours, blocking every later scheduled run AND any manual
+    # recovery dispatch queued behind it. A normal run (install, test, fetch,
+    # render, commit) takes a few minutes; 30 gives generous headroom above
+    # that while still failing fast enough for same-day manual recovery.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
