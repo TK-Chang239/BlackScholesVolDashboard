@@ -6,15 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-_LAYOUT = dict(
-    template="plotly_white",
-    margin=dict(l=50, r=20, t=100, b=45),
-    height=460,
-    legend=dict(orientation="h", yanchor="bottom", y=1.12),
-    font=dict(size=13),
-    title_y=0.97,
-    title_yanchor="top",
-)
+from src.render.base import LAYOUT as _LAYOUT, empty_figure as _empty_figure
 
 # P7 carries a note above the plot area (close-based, or the early-exercise
 # count), so it needs more headroom between the title and the top row of cells.
@@ -67,14 +59,6 @@ def build_term_structure_figure(today: pd.DataFrame,
         title="ATM implied vol term structure",
         xaxis_title="Days to expiry", yaxis_title="ATM implied vol",
         yaxis_tickformat=".0%", **_LAYOUT)
-    return fig
-
-
-def _empty_figure(title: str, message: str, **layout) -> go.Figure:
-    fig = go.Figure()
-    fig.add_annotation(text=message, xref="paper", yref="paper", x=0.5, y=0.5,
-                       showarrow=False, font=dict(size=16))
-    fig.update_layout(title=title, **layout, **_LAYOUT)
     return fig
 
 

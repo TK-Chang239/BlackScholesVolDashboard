@@ -473,16 +473,27 @@ class TestHedgeShares:
 
 
 class TestSimulateTrade:
+    HORIZON = 30      # entry_dte in CFG; select_straddle rejects anything >15 days off it
+
     def _setup(self, closes, n_chain_days=None, spot0=100.0):
+        """A 31-session archive whose single expiry is exactly `HORIZON` days out.
+
+        `closes` is padded by HOLDING ITS LAST VALUE to 31 sessions, so a short
+        list describes the opening moves and then a flat tail -- the settlement
+        spot is `closes[-1]`.
+        """
         entry = dt.date(2026, 6, 1)
-        expiry = entry + dt.timedelta(days=len(closes) - 1)
-        u = make_underlying(entry, closes)
-        n_chain_days = len(closes) if n_chain_days is None else n_chain_days
+        expiry = entry + dt.timedelta(days=self.HORIZON)
+        n = self.HORIZON + 1
+        series = list(closes) + [closes[-1]] * (n - len(closes))
+        u = make_underlying(entry, series)
+        n_chain_days = n if n_chain_days is None else n_chain_days
         chains = {}
         for i in range(n_chain_days):
             d = entry + dt.timedelta(days=i)
-            chains[d] = make_chain(d, closes[i], {expiry: 0.20}, strikes=(95.0, 100.0, 105.0))
+            chains[d] = make_chain(d, series[i], {expiry: 0.20}, strikes=(95.0, 100.0, 105.0))
         sel = select_straddle(chains[entry], CFG)
+        assert sel is not None
         return entry, expiry, sel, chains, u
 
     def test_day_zero_pv_is_exactly_zero(self):
@@ -501,7 +512,6 @@ class TestSimulateTrade:
         assert np.allclose(parts.to_numpy(), daily["pnl_day"].to_numpy(), atol=1e-10)
         assert np.allclose(daily["pv"].diff().dropna().to_numpy(),
                            daily["pnl_day"].iloc[1:].to_numpy(), atol=1e-10)
-        assert daily["pnl_cum"].iloc[-1] if "pnl_cum" in daily else True
 
     def test_settles_at_intrinsic_with_hedge_unwound(self):
         entry, expiry, sel, chains, u = self._setup([100.0, 100.0, 100.0, 107.0])
@@ -525,7 +535,7 @@ class TestSimulateTrade:
         daily, trade = simulate_trade(entry, sel, chains, u, 0.04, 0.013, CFG)
         assert trade["status"] == "open"
         assert trade["exit_date"] == entry + dt.timedelta(days=2)
-        assert np.isnan(trade["edge"]) is False   # edge is computed to the last mark
+        assert not np.isnan(trade["edge"])   # edge is measured to the last mark
 
     def test_missing_chain_day_is_model_marked_and_counted(self):
         entry, expiry, sel, chains, u = self._setup([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
@@ -1146,7 +1156,7 @@ git commit -m "feat: stateless P8 replay driver over the stored chain archive"
 - Consumes: `portfolio_daily` output columns `["date", "pnl_day", "pnl_cum", "n_open"]`; `TRADE_COLUMNS`.
 - Produces:
   - `src/render/base.py`: `LAYOUT: dict`, `empty_figure(title: str, message: str, **layout) -> go.Figure`
-  - `src/render/hedge_figures.py`: `build_hedge_pnl_figure(port, trades, daily) -> go.Figure`, `build_hedge_histogram_figure(port) -> go.Figure`
+  - `src/render/hedge_figures.py`: `build_hedge_pnl_figure(port, daily) -> go.Figure`, `build_hedge_histogram_figure(daily) -> go.Figure`
 
 **Why `base.py`:** `figures.py` is already 400+ lines with eight builders, and the Phase 5 review recorded "split figures.py" as a deferred item. Extracting only the two genuinely shared helpers keeps the diff small and stops `hedge_figures.py` from importing another module's privates.
 
@@ -1248,9 +1258,7 @@ class TestHedgeFigures:
         bars = [t for t in fig.data if t.type == "histogram"]
         assert len(bars) == 1
         assert list(bars[0].x) == [1.0, -0.5, 2.0, -1.0]
-        assert any("mean" in (s.get("name") or "").lower()
-                   or "mean" in (s.get("text") or "").lower()
-                   for s in fig.layout.shapes + tuple(fig.layout.annotations))
+        assert any("mean" in (a.text or "").lower() for a in fig.layout.annotations)
 
     def test_histogram_is_empty_state_with_one_day(self):
         from src.render.hedge_figures import build_hedge_histogram_figure
@@ -1312,8 +1320,12 @@ def build_hedge_pnl_figure(port: pd.DataFrame, trades: pd.DataFrame,
 
 
 def build_hedge_histogram_figure(port: pd.DataFrame) -> go.Figure:
-    """Distribution of daily hedged P&L. Day 0 of each trade is a definitional
-    zero (the position is opened at its own mark), so it is excluded."""
+    """Distribution of daily hedged P&L.
+
+    The archive's FIRST session has no prior mark to difference against, so it
+    is dropped. Later trades' own opening days are not dropped: they are folded
+    into a portfolio total that already carries the older trades' moves.
+    """
     daily_pnl = port["pnl_day"].iloc[1:] if len(port) > 1 else pd.Series(dtype=float)
     daily_pnl = daily_pnl.dropna()
     if len(daily_pnl) < 1:
@@ -1398,8 +1410,8 @@ class TestHedgeScatterAndStat:
         fig = build_hedge_scatter_figure(trades, fit)
         pts = [t for t in fig.data if t.mode and "markers" in t.mode]
         assert len(pts) == 1
-        assert list(pts[0].x) == [1.0, 2.0, 3.0, 4.0]      # vol POINTS, not decimals
-        assert list(pts[0].y) == [1.0, 2.0, 3.0, 4.0]
+        assert list(pts[0].x) == pytest.approx([1.0, 2.0, 3.0, 4.0])   # vol POINTS
+        assert list(pts[0].y) == pytest.approx([1.0, 2.0, 3.0, 4.0])
         assert any(t.mode == "lines" for t in fig.data)     # the regression line
         text = " ".join(a.text for a in fig.layout.annotations)
         assert "slope" in text.lower() and "vol point" in text.lower()
@@ -1613,7 +1625,7 @@ git commit -m "feat: P8 P&L-vs-edge scatter with least-squares fit and honest st
 - Test: `tests/test_render.py` (append), `tests/test_pipeline.py` (append)
 
 **Interfaces:**
-- Consumes: `replay_hedge_sim(root, r, q, cfg, extra_chains=None, underlying=None) -> dict`; `build_hedge_pnl_figure(port, trades, daily)`, `build_hedge_scatter_figure(trades, fit, next_settlement=None)`, `build_hedge_histogram_figure(port)`, `hedge_summary_html(summary)`.
+- Consumes: `replay_hedge_sim(root, r, q, cfg, extra_chains=None, underlying=None) -> dict`; `build_hedge_pnl_figure(port, daily)`, `build_hedge_scatter_figure(trades, fit, next_settlement=None)`, `build_hedge_histogram_figure(daily)`, `hedge_summary_html(summary)`.
 - Produces: panel ids `"P8a"`, `"P8b"`, `"P8c"` in `figures`; the `"P8a"` key in `extras`; nine new `status.json` keys.
 
 - [ ] **Step 1: Write the failing page tests**
@@ -1640,7 +1652,7 @@ class TestP8Page:
         assert "discrete" in cap and "hedg" in cap
 
     def test_page_renders_the_p8_panels_and_the_simulation_label(self):
-        from src.render.page import render_page
+        from src.render.page import _PANEL_TITLES, render_page
         from src.render.base import empty_figure
         figures = {pid: empty_figure(pid, "x") for pid in ("P8a", "P8b", "P8c")}
         status = {"spot": 100.0, "snapshot_date": "2026-08-28", "source": "yfinance",
@@ -1650,11 +1662,7 @@ class TestP8Page:
         assert "SIMLABEL" in html
         assert "Phase 6" not in html          # the Q4 placeholder is gone
         for pid in ("P8a", "P8b", "P8c"):
-            assert _PANEL_TITLES_TEXT(pid) in html
-
-def _PANEL_TITLES_TEXT(pid):
-    from src.render.page import _PANEL_TITLES
-    return _PANEL_TITLES[pid]
+            assert _PANEL_TITLES[pid] in html
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1719,8 +1727,12 @@ Append to `tests/test_pipeline.py` (follow the file's existing fake-provider fix
 ```python
 class TestP8Status:
     def test_status_carries_the_hedge_sim_keys(self, tmp_path):
-        # Reuse this module's existing end-to-end run helper/fixtures.
-        status = _run_pipeline(tmp_path)          # <- the helper this file already uses
+        # READ tests/test_pipeline.py FIRST. It already has an end-to-end test that
+        # builds fake providers and calls `run(...)`, returning a status dict. Reuse
+        # that machinery verbatim -- fixture, fakes, helper, whatever it is -- and
+        # bind its status dict to `status` here. Do NOT invent a second pipeline
+        # fixture, and do NOT invent a helper named `_run_pipeline`.
+        status = ...                              # <- the existing end-to-end run
         for key in ("hedge_trades", "hedge_trades_settled", "hedge_trades_open",
                     "hedge_trades_sparse", "hedge_cum_pnl", "hedge_sessions",
                     "hedge_market_mark_share", "hedge_slope_per_vol_point", "hedge_r2"):
@@ -1764,10 +1776,10 @@ In the compute stage, immediately after the P9 block and before the annotations 
 Add to the `figures` dict:
 
 ```python
-        "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["trades"], hedge["daily"]),
+        "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["daily"]),
         "P8b": build_hedge_scatter_figure(hedge["trades"], hedge["fit"],
                                           next_settlement=hsum["next_settlement"]),
-        "P8c": build_hedge_histogram_figure(hedge["portfolio"]),
+        "P8c": build_hedge_histogram_figure(hedge["daily"]),
 ```
 
 Add to `extras`:
@@ -1913,4 +1925,4 @@ git commit -m "feat: first real P8 run — hedge simulation live on the dashboar
 
 **Placeholder scan:** every code step carries the actual code; every test step carries the actual assertions; no "TBD", no "handle edge cases", no "similar to Task N".
 
-**Type consistency:** `select_straddle` returns the dict consumed by `simulate_trade` (keys `expiry, dte, strike, call_price, put_price, straddle, call_iv, put_iv, iv`). `simulate` returns `(trades, daily)`; `portfolio_daily` consumes `daily` and produces `["date","pnl_day","pnl_cum","n_open"]`, which `build_hedge_pnl_figure` and `build_hedge_histogram_figure` consume. `fit_pnl_vs_edge` returns `{n, slope, intercept, r2}`, consumed by `build_hedge_scatter_figure` and `hedge_summary`. `hedge_summary` returns the keys `hedge_summary_html` and `run_daily`'s status block read. `replay_hedge_sim` returns exactly `{trades, daily, portfolio, fit, summary}`, matching Task 7's use.
+**Type consistency:** `select_straddle` returns the dict consumed by `simulate_trade` (keys `expiry, dte, strike, call_price, put_price, straddle, call_iv, put_iv, iv`). `simulate` returns `(trades, daily, n_months_skipped)`; `portfolio_daily` consumes `daily` and produces `["date","pnl_day","pnl_cum","n_open"]`, which `build_hedge_pnl_figure` consumes; `build_hedge_histogram_figure` consumes the per-trade `daily` frame instead, so it can drop each trade's own day 0 and its model-marked days before aggregating. `fit_pnl_vs_edge` returns `{n, slope, intercept, r2}`, consumed by `build_hedge_scatter_figure` and `hedge_summary`. `hedge_summary` returns the keys `hedge_summary_html` and `run_daily`'s status block read. `replay_hedge_sim` returns exactly `{trades, daily, portfolio, fit, summary}`, matching Task 7's use.

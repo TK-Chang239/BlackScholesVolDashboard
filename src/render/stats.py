@@ -1,6 +1,8 @@
 """Stat sentences that sit above a panel (the P5 one lives in analytics.iv_rv)."""
 import math
 
+import numpy as np
+
 
 def _carry_clause(carry: dict | None, r: float, q: float) -> str:
     """The implied-carry sentence: the median, its range, and the tenor span.
@@ -103,3 +105,220 @@ def parity_summary_html(summary: dict, carry: dict | None,
                  "fifteen minutes after the stock's")
     text += "."
     return text + _carry_clause(carry, r, q) + "</p>"
+
+
+# SPEC 3 P8's "Note" requires this line, so it has to be true. `compute_chain_iv`
+# routes `price_used` to the quote MID only for live rows and to the CLOSE
+# otherwise, and almost the whole stored archive is backfill -- so "sold at the
+# mid" described a price the simulation has essentially never paid. Name the
+# rule instead, the way the P3 overlay label and the P7 stat line already do.
+_SIM_LABEL_BASE = ("Simulation for learning — a hypothetical short straddle entered and marked "
+                   "at each session's stored price: the quote mid on live sessions, the official "
+                   "close on backfilled (close-based) ones. Delta-hedged once a day on one share.")
+
+
+def _sim_label(cost_bps: float) -> str:
+    """The P8 caption. `cost_bps` is `cfg["hedge_sim"]["transaction_cost_bps"]`.
+
+    "No bid-ask spread is ever crossed" was written as a permanent fact, but it
+    is only true because the config's transaction_cost_bps happens to be 0 --
+    the same config file says v2 adds a toggle, and `simulate_trade` already
+    charges that cost on every hedge trade once it is non-zero. State whichever
+    one the current run actually did, so a config flip cannot silently
+    falsify the published page.
+    """
+    if not cost_bps:
+        cost_clause = (" No bid–ask spread is charged — transaction_cost_bps is 0 in "
+                       "this run's config.")
+    else:
+        cost_clause = (f" Every re-hedge trade is charged a modeled {cost_bps:g} bps of "
+                       "the traded notional as a stand-in for the bid–ask spread it would "
+                       "actually cross.")
+    return _SIM_LABEL_BASE + cost_clause + " Not a real position, not advice."
+
+
+def _tenor_clause(summary: dict) -> str:
+    """The tenor actually traded, min to max.
+
+    The entry rule takes the monthly expiry NEAREST the target, and the stored
+    chain holds monthly expiries only -- so read from the first session of a
+    month the nearest one is usually 16-18 days out, and ~45 whenever that
+    month's own monthly is missing from the ladder. A delta-hedged straddle's
+    round-trip P&L scales roughly with sqrt(T), so leaving the tenor unstated
+    hands the scatter a vertical spread the caption would otherwise blame
+    entirely on hedging error.
+    """
+    lo, hi = summary["dte_at_entry_min"], summary["dte_at_entry_max"]
+    if lo is None or hi is None:
+        return ""
+    return (f", sold {lo} days from expiry" if lo == hi
+            else f", sold {lo}–{hi} days from expiry")
+
+
+def _pct_not_total(x: float) -> str:
+    """`x` as a whole percent, never rounded INTO a totality it does not have.
+
+    `f"{0.9972:.0%}"` is "100%" -- and the 0.28% it rounds away is the very thing
+    the sentence exists to disclose. Around 200 quotable sessions with a single
+    gap mark in them reaches that, which this archive does inside a year. The
+    same trap sits at the bottom: one model mark in 400 renders as "0% of daily
+    marks are our own model", denying the disclosure it is making. Round
+    normally, then step back off either end whenever the true value is not
+    actually 0 or 1.
+    """
+    pct = round(x * 100)
+    if pct >= 100 and x < 1.0:
+        return "over 99%"
+    if pct <= 0 and x > 0.0:
+        return "under 1%"
+    return f"{pct}%"
+
+
+def _mark_source_clause(summary: dict) -> str:
+    """How much of the P&L is our own model, split into unavoidable and avoidable.
+
+    Two different situations put a session on a model mark and the page has to
+    keep them apart, because they answer different questions.
+
+    STRUCTURAL -- `chain_filter.dte_min` means no stored chain ever holds an
+    expiry closer than that, so over its final `dte_min` days a trade's own
+    expiry is absent from every chain in the archive. That is permanent, a
+    property of this panel rather than a shortage of data, and it is why a
+    trade's status is judged only over the sessions a chain could have quoted.
+
+    GAP -- the archive holds no usable quote for this straddle on a session
+    where one could have existed. This IS missing data, and it is the only kind
+    that makes a trade `sparse`. It is NOT the same as an absent session:
+    `_quote` also fails on a chain that IS stored but whose `(expiry, strike)`
+    pair lost a leg to an unconverged IV or to `filter_chain`'s moneyness gate.
+    Saying "the archive does not carry that session" would assert a cause the
+    data can contradict -- the F2 mistake, one layer up.
+
+    EVERY kind present is counted by name, and the P8a caption promises exactly
+    that. Reporting only the blend and the structural count left a reader to
+    subtract for the gap count, and gating the whole clause on a ROUNDED share
+    could suppress it entirely while model marks existed -- so the gate is
+    `n_model_marks`, an exact count, and the percentages go through
+    `_pct_not_total`.
+    """
+    n_model = int(summary.get("n_model_marks", 0))
+    share = summary.get("market_mark_share", float("nan"))
+    if not n_model or not np.isfinite(share):
+        return ""
+    n_structural = int(summary.get("n_structural_marks", 0))
+    n_gap = n_model - n_structural
+    dte_min = summary.get("dte_min")
+    window = (f"inside {dte_min} days of expiry" if dte_min is not None
+              else "inside the archive's minimum days to expiry")
+    gap_phrase = ("sessions the stored archive holds no usable quote for that "
+                  "straddle on — the chain file missing, or present without that "
+                  "expiry and strike on both legs")
+    structural_phrase = (f"fall {window}, where the stored chain never carries the "
+                         "expiry at all — the final stretch of any trade held to "
+                         "expiry is modelled by design, and no backfill can change "
+                         "that")
+    text = (f". {_pct_not_total(1 - share)} of daily marks are our own model at the "
+            "last quoted vol, not a market quote")
+
+    if not n_structural:
+        # Nothing was unquotable by design here, so there is no split to draw and
+        # no denominator to narrow: name the gap count and say so.
+        return text + (f". All {n_model} of those modelled sessions are {gap_phrase}"
+                       "; none of this sample was unquotable by design, so each "
+                       "trade is judged on every one of its sessions")
+    if not n_gap:
+        text += f". All {n_model} of them {structural_phrase}"
+    else:
+        text += (f". {n_structural} of those {n_model} modelled sessions "
+                 f"{structural_phrase}; the other {n_gap} are {gap_phrase}")
+
+    quotable = summary.get("quotable_mark_share", float("nan"))
+    if not np.isfinite(quotable):
+        return text
+    # State the share itself, so "that share" below has something to point at,
+    # and say what it is a blend OF: the gate runs per trade, and a reader who
+    # took this aggregate for the per-trade number could not square it with the
+    # exclusions listed next. `_pct_not_total` keeps a near-miss off "100%".
+    return text + (". Over the remaining sessions — the ones a stored chain could "
+                   f"have quoted — {_pct_not_total(quotable)} of marks come from the "
+                   "market; it is that share, measured per trade, that decides which "
+                   "trades reach the scatter")
+
+
+def hedge_summary_html(summary: dict) -> str:
+    """The P8 stat line. Never describes a slope the sample cannot support."""
+    label = _sim_label(summary.get("cost_bps", 0.0))
+    if summary["n_trades"] == 0:
+        text = ("No simulated trade yet — the first opens on the first "
+                "stored session of a month.")
+        # A month can come and go and still fail to seed a trade (no expiry
+        # near the target, no strike with both legs solved, no underlying
+        # close). Without this, an archive where EVERY month was skipped
+        # renders the sentence above -- which reads as "still pending" -- while
+        # status.json's hedge_months_skipped says several already came and none
+        # could seed one. Say so, the same way the n_trades > 0 branch below does.
+        skipped = summary["n_months_skipped"]
+        if skipped:
+            text += (f" {skipped} month{'s' if skipped != 1 else ''} in the archive "
+                     f"produced no trade — {'their' if skipped != 1 else 'its'} first "
+                     "stored session could not seed a straddle at the target tenor.")
+        return f"<p class='stat'>{text}</p><p class='caption'>{label}</p>"
+
+    since = summary["first_entry"].isoformat()
+    money = f"${summary['cum_pnl']:,.2f}" if np.isfinite(summary["cum_pnl"]) else "n/a"
+    head = (f"{summary['n_trades']} simulated trade"
+            f"{'s' if summary['n_trades'] != 1 else ''} since {since}: "
+            f"cumulative P&L {money} over {summary['n_days']} sessions"
+            f"{_tenor_clause(summary)}")
+
+    n = summary["n_settled"]
+    reached = summary["n_reached_expiry"]
+    slope = summary.get("slope", float("nan"))
+    r2 = summary.get("r2", float("nan"))
+    fit_usable = np.isfinite(slope) and np.isfinite(r2)
+    if n == 0 and reached == 0:
+        when = summary["next_settlement"]
+        tail = ("; none has reached expiry yet, so the P&L-vs-edge scatter is still empty"
+                + (f" — the first settles {when.isoformat()}" if when is not None else ""))
+    elif n == 0:
+        # A `sparse` trade HAS reached expiry; it is only off the scatter. Saying
+        # "none has reached expiry yet" here contradicted the cumulative P&L in
+        # the same sentence, which already carried that trade's round trip.
+        plural = "s have" if reached != 1 else " has"
+        carries = "none carries" if reached != 1 else "it does not carry"
+        # Name the SAME rule the sparse-exclusion sentence and the scatter's own
+        # empty state name. This branch fires in exactly the state the structural
+        # split exists to resolve, so an unqualified "enough market marks" here
+        # reads as the old, blended bar that no short-tenor trade could clear.
+        tail = (f"; {reached} trade{plural} reached expiry but {carries} enough market "
+                "marks on the sessions the archive could have quoted, so the "
+                "P&L-vs-edge scatter is still empty")
+    elif n == 1:
+        tail = "; exactly one trade has settled — one round trip, not a relationship"
+    elif n < 5:
+        tail = (f"; {n} trades have settled — too few to read a line through, "
+                "so the fit is drawn but not claimed")
+    elif not fit_usable:
+        # np.polyfit still returns NaN for a degenerate fit -- e.g. every settled
+        # trade sharing one edge value, a vertical cloud with no line through it.
+        # Plenty of trades, but nothing to report: same "not claimed" outcome as
+        # too few of them, just a different reason, so say the actual reason.
+        tail = (f"; {n} trades have settled, but their edges are too similar to "
+                "fit a line through — the fit is drawn but not claimed")
+    else:
+        tail = (f"; across {n} settled trades the fit is ${slope:.2f} of P&L "
+                f"per vol point of edge (R² {r2:.2f})")
+
+    tail += _mark_source_clause(summary)
+    # When nothing has settled, the branch above has already said that every
+    # finished trade is off the scatter; repeating it here would be redundant.
+    if summary["n_sparse"] and n > 0:
+        tail += (f". {summary['n_sparse']} trade(s) are excluded from the scatter for "
+                 "having too few market marks on the sessions the archive could "
+                 "have quoted")
+    skipped = summary["n_months_skipped"]
+    if skipped:
+        tail += (f". {skipped} month{'s' if skipped != 1 else ''} in the archive produced "
+                 f"no trade — {'their' if skipped != 1 else 'its'} first stored session "
+                 "could not seed a straddle at the target tenor")
+    return f"<p class='stat'>{head}{tail}.</p><p class='caption'>{label}</p>"

@@ -97,6 +97,69 @@ CAPTIONS = {
         "model-free check is why desks trust Black-Scholes "
         "as a quoting convention even when they distrust it as a forecast."
     ),
+    "P8a": (
+        "On the first stored session of each month this simulation sells one "
+        "at-the-money straddle on the monthly expiry nearest 30 days out, and "
+        "delta-hedges it once a day with this project's own Black-Scholes deltas, "
+        "at each leg's own market implied vol. Nearest 30 is not 30: the chain "
+        "stores monthly expiries only, so from the first session of a month the "
+        "nearest monthly is usually 16–18 days away, and about 45 whenever that "
+        "month's own monthly is missing from the ladder — the stat line above "
+        "gives the range actually traded, and Q4's second panel says what that "
+        "does to the dots. Cash earns the risk-free rate and the hedge earns the "
+        "dividend yield, so the line below is the whole position: option marks, "
+        "share hedge, carry. A cumulative P&L cannot skip days, so unlike the "
+        "histogram below this line also includes every session with no chain "
+        "quote: settlement is marked at intrinsic value from the underlying "
+        "close, a market fact, and every other one is marked with our own model "
+        "at the last quoted vol. Two different things put a session in that last "
+        "group, and only one of them is missing data. The archive stores no "
+        "expiry closer than its minimum days-to-expiry filter, so over its final "
+        "stretch a trade's own expiry is absent from every stored chain by "
+        "design — permanent, and no backfill can change it. The rest are "
+        "sessions the stored archive holds no usable quote for that straddle "
+        "on — the chain file missing, or present without that expiry and strike "
+        "on both legs — and those are the only ones held against a trade when "
+        "deciding whether it is quoted well enough to earn a dot on the next "
+        "panel. Where either kind occurs, the stat line above gives its count. "
+        "The thin grey lines are the individual trades; the blue line is their sum."
+    ),
+    "P8b": (
+        "The money chart. Each dot is one round trip: what the straddle was sold "
+        "at, minus what the underlying actually went on to realize, against the "
+        "dollars the hedged position made or lost. Black-Scholes predicts the "
+        "relationship — a delta-hedged short option earns about "
+        "½ Γ S² (σ²_implied − σ²_realized) dt per day, so selling vol above what "
+        "arrives should pay and selling it below should not. The slope is that "
+        "prediction measured on real quotes. The scatter around the line is not "
+        "noise to be explained away: it is discrete-hedging error, the price of "
+        "re-hedging once a day instead of continuously, plus the vol "
+        "mark-to-market the model assumes away. And part of it is not error at "
+        "all — the trades are not the same length. That same formula scales the "
+        "round trip with √T, so a 45-day trade earns roughly 1.6× the dollars of "
+        "a 17-day one at identical edge, and the entry rule delivers both; the "
+        "stat line above gives the tenor range these dots were drawn from."
+    ),
+    "P8c": (
+        "The same P&L, one session at a time — counting only sessions marked at "
+        "a market price: a chain quote, or settlement at intrinsic value from "
+        "the underlying close. Every other session is marked with our own model "
+        "at the last quoted vol, so it moves with spot and time decay alone and "
+        "is Black-Scholes-conforming by construction; letting those days in "
+        "would narrow this histogram towards the answer the model wants. That "
+        "holds for both kinds of modelled session — the ones the archive holds "
+        "no usable quote for, and the ones in a trade's final stretch where the "
+        "stored chain never carries its expiry at all. The panel above has to "
+        "tell those two "
+        "apart to decide which trades are honestly quoted; this one does not, "
+        "because a frozen-vol mark flatters it either way. Each "
+        "trade's opening day is dropped too — it is a definitional "
+        "zero, not a session. Black-Scholes says a perfectly hedged option "
+        "position has no risk left; a histogram with visible width is the direct "
+        "measurement of how wrong that is at a daily hedging frequency. The "
+        "spread is gamma and vol moves; the centre is the premium being earned "
+        "or bled."
+    ),
     "P9": (
         "Price every contract with one flat volatility — today's ~30-day "
         "at-the-money implied vol — and compare to the market. The error is not "
@@ -116,7 +179,7 @@ QUESTIONS = [
     ("Q3", "Is implied volatility a prediction, or a price?",
      ["P5"], ""),
     ("Q4", "The model claims you can hedge an option perfectly. Can you?",
-     [], "Delta-hedged P&L simulation arrives in Phase 6."),
+     ["P8a", "P8b", "P8c"], ""),
     ("Q5", "Given all these flaws, why does every desk still use Black-Scholes?",
      ["P7"], ""),
 ]
@@ -129,6 +192,9 @@ _PANEL_TITLES = {
     "P5": "Implied vs realized volatility",
     "P6": "25-delta skew — time series",
     "P7": "Put-call parity checker",
+    "P8a": "Cumulative P&L — simulated delta-hedged straddles",
+    "P8b": "Per-trade P&L vs (entry IV − realized vol)",
+    "P8c": "Daily hedged P&L — distribution",
     "P9": "Model-vs-market price heatmap",
 }
 

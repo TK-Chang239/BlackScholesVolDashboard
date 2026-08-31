@@ -11,6 +11,8 @@ by sqrt(annualization_days). Two views of the same quantity:
                          matured. This is the honest forecast target for
                          a ~horizon-DTE implied vol quoted on day t.
 """
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 
@@ -51,3 +53,21 @@ def forward_realized_vol(underlying: pd.DataFrame, horizon_days: int = 30,
             out[i] = np.std(r, ddof=1) * np.sqrt(annualization_days)
     return pd.Series(out, index=pd.Index(df["date"], name="date"),
                      name=f"fwd_rv_{horizon_days}d")
+
+
+def realized_vol_between(underlying: pd.DataFrame, start: dt.date, end: dt.date,
+                         annualization_days: int = 252) -> float:
+    """Annualized close-to-close realized vol from the returns inside [start, end].
+
+    Same estimator as `trailing_realized_vol` (log returns on ADJUSTED close,
+    sample std with ddof=1, sqrt-time annualization) but over an explicit
+    window rather than a rolling one -- P8 needs the vol a trade actually
+    lived through. Both endpoints are included as PRICES, so a window of n
+    sessions yields n-1 returns. NaN below 2 returns.
+    """
+    u = _sorted(underlying)
+    window = u[(u["date"] >= start) & (u["date"] <= end)]
+    rets = log_returns(window["adjusted_close"]).dropna()
+    if len(rets) < 2:
+        return float("nan")
+    return float(rets.std(ddof=1) * np.sqrt(annualization_days))

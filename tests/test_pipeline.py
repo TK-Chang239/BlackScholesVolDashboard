@@ -231,7 +231,38 @@ class TestRenderStage:
         own_markup = page.replace(_BUNDLE.read_text(), "")
         assert "https://cdn.plot.ly" not in own_markup
         assert 0.0 <= status["iv_convergence"] <= 1.0
-        assert status["panels_rendered"] == ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P9"]
+        assert status["panels_rendered"] == sorted(
+            ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8a", "P8b", "P8c", "P9"])
+        # P8 hedge-sim keys (Phase 6). This fixture opens NO trade, and the
+        # reason is not moneyness: `select_straddle` has no at-the-money
+        # requirement, it just takes the strike nearest spot, so a lone 700
+        # strike would be selected whatever it is. What actually happens is that
+        # 700 is ~9% IN the money for the call, and its $71.20 quote sits below
+        # the European no-arbitrage floor S·e^-qT - K·e^-rT = $71.23 at
+        # r=0.0415, q=0.0098, T=21/365 -- so the call's IV never converges, no
+        # strike carries both legs, and `select_straddle` returns None. Still
+        # the right place to assert the KEYS exist: the shape of status.json
+        # must hold whether or not a trade could be opened. A live trade
+        # through the same wiring is covered by
+        # test_wide_chain_seeds_a_hedge_trade_end_to_end below.
+        for key in ("hedge_trades", "hedge_trades_settled", "hedge_trades_open",
+                    "hedge_trades_sparse", "hedge_trades_reached_expiry",
+                    "hedge_months_skipped", "hedge_cum_pnl", "hedge_sessions",
+                    "hedge_dte_at_entry_min", "hedge_dte_at_entry_max",
+                    "hedge_market_mark_share", "hedge_quotable_mark_share",
+                    "hedge_model_marks", "hedge_model_marks_structural",
+                    "hedge_model_marks_gap",
+                    "hedge_slope_per_vol_point", "hedge_r2"):
+            assert key in status
+        assert status["hedge_trades"] == 0
+        # the month WAS considered and rejected -- that must be visible, not silent
+        assert status["hedge_months_skipped"] == 1
+        from src.analytics.chain_iv import compute_chain_iv
+        stored = pd.read_parquet(storage.chain_path(TODAY, tmp_path))
+        solved, _ = compute_chain_iv(stored, 0.0415, 0.0098)
+        call = solved[solved["kind"] == "call"].iloc[0]
+        assert pd.isna(call["iv"])          # the stated cause, not an assumed one
+        assert solved[solved["kind"] == "put"]["iv"].notna().all()   # the put is fine
         # status still written last and consistent with the page
         on_disk = json.loads((tmp_path / "docs" / "status.json").read_text())
         assert on_disk == status
@@ -368,7 +399,44 @@ class TestPhase5Stage:
         assert "Put-call parity checker" in page and "Model-vs-market" in page
         assert "25-delta skew" in page
         assert "arrives in Phase 5" not in page
-        assert "arrives in Phase 6" in page              # Q4 still pending
+        # Phase 6 retires the Q4 placeholder: the P8 panels render (in their
+        # own empty state, since this single-strike fixture is ~9% OTM of spot
+        # and can never seed an at-the-money straddle) rather than a
+        # "arrives in Phase N" note.
+        assert "arrives in Phase 6" not in page
+        assert "Cumulative P&L" in page
+
+    def test_wide_chain_seeds_a_hedge_trade_end_to_end(self, tmp_path):
+        """F7: run_daily -> replay_hedge_sim -> hedge_figures -> render_page with a
+        REAL trade in it. Every other pipeline test drives that path in its empty
+        state, which is why F1, F2 and F4 shipped undetected.
+        """
+        status = run(FakeEODHD(), WideLive(), FakeFallback(), real_cfg(), tmp_path,
+                     today=TODAY)
+        assert status["hedge_trades"] == 1
+        assert status["hedge_trades_open"] == 1
+        assert status["hedge_trades_settled"] == 0
+        assert status["hedge_trades_reached_expiry"] == 0
+        assert status["hedge_trades_sparse"] == 0
+        assert status["hedge_months_skipped"] == 0
+        assert status["hedge_sessions"] == 1
+        # the tenor the sim actually traded, not config's entry_dte: 30
+        assert status["hedge_dte_at_entry_min"] == 28
+        assert status["hedge_dte_at_entry_max"] == 28
+        # the structural/gap split reaches status.json: this trade is one session
+        # old, so nothing is modelled either avoidably or by design yet
+        assert status["hedge_model_marks"] == 0
+        assert status["hedge_model_marks_structural"] == 0
+        assert status["hedge_model_marks_gap"] == 0
+        page = (tmp_path / "docs" / "index.html").read_text()
+        assert "1 simulated trade since 2026-08-28" in page
+        assert "sold 28 days from expiry" in page
+        assert "none has reached expiry yet" in page
+        # the SPEC 3 P8 disclosure line reached the page and does not claim a mid
+        assert "close-based" in page
+        assert "sold at the mid" not in page
+        on_disk = json.loads((tmp_path / "docs" / "status.json").read_text())
+        assert on_disk == status
 
     def test_wide_chain_records_skew_and_zero_violations(self, tmp_path):
         from src.models.black_scholes import bs_price

@@ -93,3 +93,41 @@ class TestForward:
         assert MIN_FORWARD_RETURNS > 3
         fwd = forward_realized_vol(frame([100.0 + i for i in range(40)]), horizon_days=3)
         assert fwd.isna().all()
+
+
+class TestRealizedVolBetween:
+    def test_matches_hand_computation_over_an_explicit_window(self):
+        import datetime as dt
+        import numpy as np
+        import pandas as pd
+        from src.models.realized_vol import realized_vol_between
+
+        dates = [dt.date(2026, 1, 5) + dt.timedelta(days=i) for i in range(6)]
+        closes = [100.0, 101.0, 100.5, 102.0, 101.5, 103.0]
+        u = pd.DataFrame({"date": dates, "close": closes, "adjusted_close": closes,
+                          "volume": [1.0] * 6})
+        got = realized_vol_between(u, dates[1], dates[4])
+        rets = np.diff(np.log(closes[1:5]))
+        assert got == pytest.approx(float(np.std(rets, ddof=1) * np.sqrt(252)))
+
+    def test_window_is_inclusive_of_both_endpoints_as_prices(self):
+        import datetime as dt
+        import pandas as pd
+        from src.models.realized_vol import realized_vol_between
+
+        dates = [dt.date(2026, 1, 5) + dt.timedelta(days=i) for i in range(4)]
+        u = pd.DataFrame({"date": dates, "close": [100.0, 100.0, 100.0, 100.0],
+                          "adjusted_close": [100.0, 100.0, 100.0, 100.0],
+                          "volume": [1.0] * 4})
+        assert realized_vol_between(u, dates[0], dates[3]) == pytest.approx(0.0)
+
+    def test_too_few_returns_is_nan(self):
+        import datetime as dt
+        import numpy as np
+        import pandas as pd
+        from src.models.realized_vol import realized_vol_between
+
+        dates = [dt.date(2026, 1, 5), dt.date(2026, 1, 6)]
+        u = pd.DataFrame({"date": dates, "close": [100.0, 101.0],
+                          "adjusted_close": [100.0, 101.0], "volume": [1.0, 1.0]})
+        assert np.isnan(realized_vol_between(u, dates[0], dates[1]))
