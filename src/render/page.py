@@ -167,8 +167,8 @@ CAPTIONS = {
         "noise: the wings are systematically rich against the flat-vol model, on "
         "both sides, day after day. A structured error means the world has a "
         "feature the model lacks (fat tails, volatility that moves), which is "
-        "exactly why Heston and SABR exist. This is the smile of the panel above, "
-        "re-expressed in price."
+        "exactly why Heston and SABR exist. This is the smile shown earlier in "
+        "this section, re-expressed in price."
     ),
 }
 
