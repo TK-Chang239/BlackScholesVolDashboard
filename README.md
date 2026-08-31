@@ -120,12 +120,60 @@ in [`SPEC.md`](SPEC.md).
 - [x] Phase 7 — daily automation shipped (scheduled Actions run, staleness
       banner, mobile pass); its exit criterion, five consecutive unattended
       green runs, is accruing and not yet met
-- [ ] Phase 8 — findings written up; all ten learning-log questions answered
+- [x] Phase 8 — findings written up; all ten learning-log questions answered
 
 ## Findings
 
-*Filled in as evidence accumulates — one subsection per guiding question,
-each answered with this dashboard's own charts.*
+Numbers below come from the project's own probes, tests and rendered
+panels, not from a textbook. Full derivations, caveats and the private
+five questions are in [`LEARNING_LOG.md`](LEARNING_LOG.md#the-ten-answers).
+
+**1. Everyone has the same formula. Why does anyone disagree about prices?**
+Because volatility is the one input in the formula nobody can look up,
+and it also happens to move the price the most among the inputs a trader
+could actually be wrong about. Bumping every Black-Scholes input ±20% on
+a real 30-day at-the-money SPY call moved the price **36.6%** for a
+volatility miss, versus **4.5%** for the risk-free rate and **1.2%** for
+the dividend yield — roughly 8x and 30x smaller. See the **Input
+sensitivity** and **Greeks** panels on the live dashboard.
+
+**2. Where does the market ignore the model, and why?**
+Black-Scholes says one volatility should price every option on SPY; the
+market instead prices a different one for every strike and every expiry.
+On one recent session the implied vol ran from about **50%** on the
+deepest downside puts down to roughly **11%** near the money and back up
+to only about **21%** on the equivalent upside calls, and pricing the
+whole chain at a single flat vol landed inside the bid-ask spread on just
+**18.5%** of quoted contracts. See the **IV smile / skew**, **ATM term
+structure**, **Skew time series**, and **Model-vs-market heatmap**
+panels.
+
+**3. Is implied volatility a prediction, or a price?**
+Mostly a price: across the 64 sessions this project has archived, the
+~30-day at-the-money implied vol has come in above what the market
+subsequently realized on **81%** of the 37 sessions old enough to grade —
+a persistent premium collected for bearing risk, not a forecast that
+just misses randomly. See the **Implied vs realized vol** panel; the
+currently published page shows an earlier, smaller snapshot of this same
+statistic while the daily-automation criterion below is still accruing.
+
+**4. The model claims you can hedge an option perfectly. Can you?**
+Not exactly: re-hedging once a day instead of continuously leaves real
+profit-and-loss noise, even on a trade that ends up profitable. Two of
+this project's three simulated monthly short-straddle trades have run to
+expiry and settled, both profitable (**+$2.77** and **+$0.57** per
+share) — but two data points are not a trend, and the page's own scatter
+plot says so rather than claim a relationship it can't yet support. See
+the **Delta-hedged P&L sim** panel.
+
+**5. Given all these flaws, why does every trading desk still use Black-Scholes?**
+Because some of what it's built from doesn't depend on the model being
+right, and holds almost exactly. Put-call parity — derived from
+no-arbitrage alone, with no volatility in it — starts out failing on
+**20.2%** of quoted SPY option pairs; once stale-quote artifacts are
+removed and the American early-exercise right on in-the-money puts is
+accounted for, only **1.03%** of the liquid pairs remain unexplained.
+See the **Put-call parity checker** panel.
 
 ## Disclaimers
 
