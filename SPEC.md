@@ -308,6 +308,18 @@ computation → output → acceptance criteria.
 
 - **Setup**: on the first trading day each month, "sell" one ~30-DTE ATM
   straddle at mid; record entry IV.
+  - *Amended after Phase 6 — two clauses here could not be honoured as
+    written, and the implementation diverges knowingly:*
+    (a) **"at mid"**: §2.2 routes price to the mid only for live (yfinance)
+    rows and to the close otherwise, and almost the whole archive is
+    backfilled, so trades are entered and marked at the **close** on those
+    sessions. The page states the routing rule rather than claiming a mid.
+    (b) **"~30-DTE"**: §2.2 stores *monthly expiries only*, and from the
+    first session of a month the monthly ladder sits ~17 days out or ~46 —
+    never 30. Nearest-to-30 therefore enters systematically at **16-18
+    days**. The entry cadence and the target tenor cannot both hold; the
+    cadence was kept and the realised tenor is published on the page and in
+    `status.json` rather than the selection being tuned to hide it.
 - **Daily**: re-hedge to delta-neutral using **our own** BS deltas at
   current market IV; accrue hedge position P&L from underlying moves;
   mark the short straddle to market (mid). Cash earns r. No transaction
@@ -322,6 +334,12 @@ computation → output → acceptance criteria.
   (IV − RV); caption states the gamma-P&L result — daily hedged P&L
   ≈ ½ Γ S² (σ²_realized − σ²_implied) dt, with vol-mark-to-market noise
   around it — and flags residual noise as discrete-hedging error.
+  - *Status after Phase 6: the caption clause is met; the scatter clause is
+    **not**, and is not weakened here.* It is gated on sample size, not on
+    code: one monthly trade completes per month, so a scatter that could
+    show a relationship is roughly a year of accumulation away. Two trades
+    have settled; the page draws the fit and explicitly declines to claim
+    it. Re-check this criterion rather than assuming Phase 6 satisfied it.
 - **Design**: the simulation is **stateless** — recomputed in full from
   stored chain history (`data/chains/`) on every run, never accruing
   marks day by day. The day Phase 6 lands, it replays every monthly trade
