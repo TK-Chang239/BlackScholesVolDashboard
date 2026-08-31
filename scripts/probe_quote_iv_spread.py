@@ -37,6 +37,8 @@ CHAINS_DIR = ROOT / "data" / "chains"
 STATUS_PATH = ROOT / "docs" / "status.json"
 sys.path.insert(0, str(ROOT))
 
+from src.analytics.chain_iv import compute_chain_iv  # noqa: E402
+from src.analytics.parity import compute_parity  # noqa: E402
 from src.models.black_scholes import greeks, implied_vol  # noqa: E402
 
 NEAR_MONEY_BAND = 0.02   # |strike/spot - 1| <= this => "near the money"
@@ -159,7 +161,8 @@ def solve_all(df: pd.DataFrame, r: float, q: float) -> pd.DataFrame:
     """Per-contract working table: kind, strike, dte, mid, moneyness = strike/spot,
     the three implied vols, and vega at the mid vol -- exactly what the brief asks
     to keep, plus the no-arb bounds used only for the failure diagnostics."""
-    work = df[["kind", "strike", "dte", "spot", "bid", "mid", "ask"]].copy()
+    work = df[["kind", "strike", "dte", "spot", "bid", "mid", "ask",
+               "volume", "open_interest"]].copy()
     work["moneyness"] = work["strike"] / work["spot"]
     for col in ("bid", "mid", "ask"):
         work[f"iv_{col}"] = _solve_by_kind(work, col, r, q)
@@ -195,6 +198,86 @@ def report_failures(work: pd.DataFrame) -> None:
 # Step 3: the distribution, sliced
 # --------------------------------------------------------------------------
 
+def report_itm_quoting_shape(work: pd.DataFrame) -> None:
+    """Describes -- does not explain -- how the dollar bid-ask width behaves
+    on the ITM side (any depth, not just the 'deep_itm' >10% bucket), since
+    review found the deep-ITM width is a flat ~constant-fraction-of-spot
+    step, not a value that grows with the contract's own premium."""
+    w = work.copy()
+    w["dollar_width"] = w["ask"] - w["bid"]
+    is_call = (w["kind"] == "call").to_numpy()
+    moneyness = w["moneyness"].to_numpy()
+    is_itm = (is_call & (moneyness < 1.0)) | (~is_call & (moneyness > 1.0))
+    itm_all = w[is_itm]
+    if itm_all.empty:
+        print("  No ITM rows in this session.")
+        return
+    chain_corr = w["dollar_width"].corr(w["mid"])
+    itm_corr = itm_all["dollar_width"].corr(itm_all["mid"])
+    pct_of_spot = itm_all["dollar_width"] / itm_all["spot"] * 100.0
+    print(f"  ITM contracts (any depth, strike on the in-the-money side of spot): "
+          f"n={len(itm_all)} of {len(w)}")
+    print(f"  median $ width {itm_all['dollar_width'].median():.3f}, IQR "
+          f"[{itm_all['dollar_width'].quantile(0.25):.3f}, {itm_all['dollar_width'].quantile(0.75):.3f}], "
+          f"across a premium range of ${itm_all['mid'].min():.2f} to ${itm_all['mid'].max():.2f}")
+    print(f"  width as % of spot: median {pct_of_spot.median():.3f}%, std {pct_of_spot.std():.3f}%")
+    print(f"  corr(width, mid): {itm_corr:.3f} within this ITM population, "
+          f"vs {chain_corr:.3f} chain-wide")
+    print("  Observation only: the width-vs-premium relationship that holds chain-wide is largely absent")
+    print("  inside the ITM band -- a materially flatter, near-constant-fraction-of-spot width regardless of")
+    print("  how deep ITM or how large the premium. This probe does not establish WHY (vendor/market-maker")
+    print("  quoting convention vs. something else); see the liquidity cross-check below for one candidate.")
+
+
+def report_parity_crosscheck(chain: pd.DataFrame, all3: pd.DataFrame, r: float, q: float) -> None:
+    """Reproduces Phase 5's put-call parity check (`src.analytics.chain_iv`,
+    `src.analytics.parity`) on this same session and asks, with exact
+    (dte, strike, kind) keys, whether the wide-spread deep-ITM population
+    this probe found is the same population Phase 5 flagged as zero-open-
+    interest 'dead quotes' via a completely different diagnostic."""
+    chain_iv, _ = compute_chain_iv(chain, r, q)
+    parity = compute_parity(chain_iv, r, q)
+    if parity.empty:
+        print("  No parity pairs (no matching call/put strikes) for this session -- skipping cross-check.")
+        return
+    n_illiquid = int((~parity["liquid"]).sum())
+    n_viol = int(parity["tradeable_violation"].sum())
+    n_viol_illiquid = int(parity.loc[~parity["liquid"], "tradeable_violation"].sum())
+    print(f"  Parity pairs: {len(parity)}; illiquid (a leg has zero open interest): {n_illiquid}; "
+          f"raw tradeable violations: {n_viol}, of which {n_viol_illiquid} have an illiquid leg.")
+    print("  (These reproduce LEARNING_LOG.md's Phase 5 numbers for 2026-08-28: "
+          "654 pairs, 69 illiquid, 132 violations, 45 illiquid-and-violating.)")
+
+    zero_oi_legs: set[tuple] = set()
+    viol_legs: set[tuple] = set()
+    for _, prow in parity.iterrows():
+        if prow["call_oi"] <= 0:
+            zero_oi_legs.add((prow["dte"], prow["strike"], "call"))
+        if prow["put_oi"] <= 0:
+            zero_oi_legs.add((prow["dte"], prow["strike"], "put"))
+        if prow["tradeable_violation"]:
+            viol_legs.add((prow["dte"], prow["strike"], "call"))
+            viol_legs.add((prow["dte"], prow["strike"], "put"))
+
+    deep_itm = all3[all3["bucket"] == "deep_itm"]
+    deep_itm_keys = set(zip(deep_itm["dte"], deep_itm["strike"], deep_itm["kind"]))
+    if not deep_itm_keys:
+        print("  No deep_itm contracts to cross-check.")
+        return
+    overlap_zero_oi = deep_itm_keys & zero_oi_legs
+    overlap_viol = deep_itm_keys & viol_legs
+    n = len(deep_itm_keys)
+    print(f"\n  Overlap with this probe's deep_itm vol-spread bucket ({n} contracts, bid/mid/ask all solved):")
+    print(f"    {len(overlap_zero_oi)}/{n} ({100.0 * len(overlap_zero_oi) / n:.1f}%) ARE a zero-open-interest leg "
+          "of a parity pair -- the same dead-quote population Phase 5 found independently via put-call parity.")
+    print(f"    {len(overlap_viol)}/{n} ({100.0 * len(overlap_viol) / n:.1f}%) belong to a pair Phase 5 flagged as "
+          "a tradeable parity violation.")
+    remaining = n - len(overlap_zero_oi)
+    print(f"    The other {remaining}/{n} ({100.0 * remaining / n:.1f}%) carry positive open interest on both "
+          "legs of their pair -- so the flat wide-quote pattern above is NOT confined to dead quotes; a real, "
+          "if thin, market shows the same ~$3.2 step.")
+
+
 def moneyness_bucket(work: pd.DataFrame) -> pd.Series:
     dist = work["moneyness"] - 1.0
     is_call = (work["kind"] == "call").to_numpy()
@@ -225,6 +308,25 @@ def print_stats_table(rows: list[dict]) -> None:
     for r in rows:
         print(f"{r['slice']:<16} {r['n']:>6} {r['median_pts']:>11.3f} {r['p90_pts']:>9.3f} "
               f"{r['median_rel_pct_of_mid_iv']:>19.2f} {r['p90_rel_pct_of_mid_iv']:>16.2f}")
+
+
+def _liquidity_row(label: str, part: pd.DataFrame) -> dict:
+    vol = part["volume"]
+    oi = part["open_interest"]
+    return {
+        "slice": label, "n": len(part),
+        "median_volume": vol.median(), "median_oi": oi.median(),
+        "pct_oi_zero": 100.0 * (oi <= 0).mean(),
+        "pct_vol_zero_or_missing": 100.0 * ((vol <= 0) | vol.isna()).mean(),
+    }
+
+
+def print_liquidity_table(rows: list[dict]) -> None:
+    print(f"{'slice':<20} {'n':>6} {'median volume':>14} {'median OI':>10} "
+          f"{'% OI<=0':>9} {'% vol<=0/NaN':>13}")
+    for r in rows:
+        print(f"{r['slice']:<20} {r['n']:>6} {r['median_volume']:>14.1f} {r['median_oi']:>10.1f} "
+              f"{r['pct_oi_zero']:>8.1f}% {r['pct_vol_zero_or_missing']:>12.1f}%")
 
 
 def main() -> None:
@@ -282,6 +384,11 @@ def main() -> None:
     bucket_rows = [_stats_row(b, all3[all3["bucket"] == b]) for b in bucket_order if (all3["bucket"] == b).any()]
     print_stats_table(bucket_rows)
 
+    print("\nLiquidity (volume, open interest) by the same moneyness bucket -- requested review follow-up,")
+    print("since a wide quote with no open interest may not be a two-sided market at all:")
+    liq_rows = [_liquidity_row(b, all3[all3["bucket"] == b]) for b in bucket_order if (all3["bucket"] == b).any()]
+    print_liquidity_table(liq_rows)
+
     print("\nBy DTE:")
     dte_rows = [_stats_row(f"dte={d}", g) for d, g in all3.groupby("dte")]
     print_stats_table(dte_rows)
@@ -301,16 +408,26 @@ def main() -> None:
               f"(= [{part['vega_mid'].min()/100:.4f}, {part['vega_mid'].max()/100:.4f}] per vol point); "
               f"median $ bid-ask width ${part['dollar_width'].median():.3f}; "
               f"median vol spread {part['vol_spread_pts'].median():.3f} pts, "
-              f"p90 {part['vol_spread_pts'].quantile(0.90):.3f} pts")
-    print("\n  Decile-by-decile (vega ascending) -- shows the full shape, not just the two ends:")
+              f"p90 {part['vol_spread_pts'].quantile(0.90):.3f} pts; "
+              f"median volume {part['volume'].median():.1f}, median OI {part['open_interest'].median():.1f}, "
+              f"{100.0 * (part['open_interest'] <= 0).mean():.1f}% with zero open interest")
+    print("\n  Decile-by-decile (vega ascending) -- shows the full shape, not just the two ends,")
+    print("  including liquidity so a reader can see whether noise tracks vega or tracks thin markets:")
     print(f"  {'decile':>6} {'n':>5} {'median vega':>12} {'median $width':>14} "
-          f"{'median spread pts':>18} {'dominant bucket':>16}")
+          f"{'median spread pts':>18} {'median OI':>10} {'% OI<=0':>8} {'dominant bucket':>16}")
     for d in range(n_deciles):
         part = all3[all3["vega_decile"] == d]
         dominant = part["bucket"].value_counts().idxmax()
         print(f"  {d:>6} {len(part):>5} {part['vega_mid'].median():>12.3f} "
               f"{part['dollar_width'].median():>14.3f} {part['vol_spread_pts'].median():>18.3f} "
+              f"{part['open_interest'].median():>10.1f} {100.0 * (part['open_interest'] <= 0).mean():>7.1f}% "
               f"{dominant:>16}")
+
+    print("\n--- ITM quoting shape: is the wide deep-ITM width graded, or a flat step? ---")
+    report_itm_quoting_shape(work)
+
+    print("\n--- Cross-check against Phase 5's put-call parity zero-open-interest population ---")
+    report_parity_crosscheck(chain, all3, r, q)
 
     print("\n--- Comparison against the dashboard's reported effects (same 2026-08-28 session) ---")
     print(f"  25-delta skew (docs/status.json skew_25d):          {REFERENCE_SKEW_POINTS:.3f} vol points")
