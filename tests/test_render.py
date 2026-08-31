@@ -1376,3 +1376,40 @@ class TestP8Page:
         assert "Phase 6" not in html          # the Q4 placeholder is gone
         for pid in ("P8a", "P8b", "P8c"):
             assert _PANEL_TITLES[pid] in html
+
+
+class TestStalenessBanner:
+    def _status(self, snapshot="2026-08-28"):
+        return {"spot": 100.0, "snapshot_date": snapshot, "source": "yfinance",
+                "iv_convergence": 0.99, "last_success_utc": "2026-08-29T00:00:00+00:00",
+                "rows_stored": 10}
+
+    def test_fresh_page_shows_no_banner(self):
+        import datetime as dt
+        from src.render.page import staleness_banner
+        assert staleness_banner(self._status(), today=dt.date(2026, 8, 29)) == ""
+
+    def test_weekend_gap_is_not_stale(self):
+        import datetime as dt
+        from src.render.page import staleness_banner
+        # Friday session read on Monday: three calendar days, zero missed sessions.
+        assert staleness_banner(self._status("2026-08-28"), today=dt.date(2026, 8, 31)) == ""
+
+    def test_a_stale_page_says_so_with_the_date_and_the_gap(self):
+        import datetime as dt
+        from src.render.page import staleness_banner
+        html = staleness_banner(self._status("2026-08-28"), today=dt.date(2026, 9, 8))
+        assert "2026-08-28" in html
+        assert "11 days" in html
+        assert "class='stale'" in html
+
+    def test_banner_is_rendered_into_the_page(self):
+        import datetime as dt
+        from src.render.page import render_page
+        html = render_page({}, self._status("2026-08-28"), today=dt.date(2026, 9, 8))
+        assert "class='stale'" in html
+        assert html.index("class='stale'") < html.index("Q1.")
+
+    def test_page_without_today_argument_still_renders(self):
+        from src.render.page import render_page
+        assert "<h1>vol-lens</h1>" in render_page({}, self._status())
