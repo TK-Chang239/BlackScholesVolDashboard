@@ -185,6 +185,80 @@ class TestDailyRun:
         assert not (tmp_path / "docs" / "status.json").exists()
 
 
+def flat_chain(n_pairs, source="yfinance"):
+    """A trivial CHAIN_COLUMNS-conforming frame with `n_pairs` call+put strikes,
+    written straight to disk to seed a "stored chain already exists" fixture
+    without going through run()/filter_chain."""
+    exp = dt.date(2026, 9, 18)
+    rows = []
+    for i in range(n_pairs):
+        strike = 700.0 + i
+        for kind in ("call", "put"):
+            rows.append({
+                "expiry": exp, "strike": strike, "kind": kind,
+                "bid": 1.0, "ask": 1.2, "mid": 1.1, "close": 1.1,
+                "volume": 10, "open_interest": 10, "vendor_iv": 0.2,
+                "source": source,
+            })
+    df = pd.DataFrame(rows)
+    df["snapshot_date"] = TODAY
+    df["spot"] = 770.0
+    df["dte"] = 21
+    return df[CHAIN_COLUMNS]
+
+
+class TestOverwriteShrinkGuard:
+    """F7 regression guard: refuse to publish when the freshly filtered chain
+    is drastically smaller than the stored chain it would replace (the
+    eddf247 pre-market defect: 1,452 stored rows -> 38 filtered rows, silently
+    accepted because 38 is not empty)."""
+
+    def test_fires_on_large_shrink(self, tmp_path):
+        storage.write_chain(flat_chain(20), TODAY, tmp_path)   # 40 rows stored
+        with pytest.raises(RuntimeError) as excinfo:
+            run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        msg = str(excinfo.value)
+        assert "2026-08-28" in msg              # names the session
+        assert "40" in msg and "2" in msg       # both row counts (stored, new)
+        assert "re-run" in msg.lower()          # what to do about it
+        assert "delete" in msg.lower()          # ...or accept it deliberately
+
+    def test_first_ever_write_is_not_gated(self, tmp_path):
+        assert not storage.chain_exists(TODAY, tmp_path)
+        status = run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert status["rows_stored"] == 2
+        assert storage.chain_exists(TODAY, tmp_path)
+
+    def test_same_size_or_larger_chain_is_not_gated(self, tmp_path):
+        storage.write_chain(flat_chain(1), TODAY, tmp_path)    # 2 rows stored
+        status = run(FakeEODHD(), WideLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert status["rows_stored"] > 2
+        stored_after = pd.read_parquet(storage.chain_path(TODAY, tmp_path))
+        assert len(stored_after) == status["rows_stored"]
+
+    def test_nothing_is_written_when_it_fires(self, tmp_path):
+        # a real successful run establishes a large stored chain plus every
+        # other downstream artifact
+        run(FakeEODHD(), WideLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        chain_before = storage.chain_path(TODAY, tmp_path).read_bytes()
+        metrics_before = storage.daily_metrics_path(tmp_path).read_bytes()
+        page_before = (tmp_path / "docs" / "index.html").read_bytes()
+        status_before = (tmp_path / "docs" / "status.json").read_bytes()
+
+        # second run for the SAME session with a drastically smaller live
+        # chain (2 rows vs the 42 just stored) must raise before writing
+        with pytest.raises(RuntimeError):
+            run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+
+        # non-vacuous: the two runs feed genuinely different data (42-row wide
+        # chain vs 2-row chain_frame), so any write at all -- even a partial
+        # one -- would change these bytes, not merely leave a file "present"
+        assert storage.chain_path(TODAY, tmp_path).read_bytes() == chain_before
+        assert storage.daily_metrics_path(tmp_path).read_bytes() == metrics_before
+        assert (tmp_path / "docs" / "index.html").read_bytes() == page_before
+        assert (tmp_path / "docs" / "status.json").read_bytes() == status_before
+
+
 class TestSessionDateLabeling:
     """snapshot_date must be the market session the underlying describes,
     never wall-clock `today` — matters off-hours and under a cron that runs
