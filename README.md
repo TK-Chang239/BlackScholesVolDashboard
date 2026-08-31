@@ -117,7 +117,9 @@ in [`SPEC.md`](SPEC.md).
 - [x] Phase 4 — implied-vs-realized, sensitivity, Greeks panels
 - [x] Phase 5 — skew series + parity checker
 - [x] Phase 6 — delta-hedged P&L simulation
-- [x] Phase 7 — full daily automation, five unattended green runs
+- [x] Phase 7 — daily automation shipped (scheduled Actions run, staleness
+      banner, mobile pass); its exit criterion, five consecutive unattended
+      green runs, is accruing and not yet met
 - [ ] Phase 8 — findings written up; all ten learning-log questions answered
 
 ## Findings
