@@ -297,8 +297,8 @@ instance is documented at its own site and nowhere else connects them.
    fixed band (200–800 OI) collapses the convergence gradient across
    every decile represented; all 17 chain-wide non-convergent contracts
    carry open interest ≤ 270. `34b0e83` → `f6748d2`.
-5. **Inside the very commit written to fix that class of error a fourth
-   time (Q9).** `probe_american_error.py`'s theory-ceiling bracket
+5. **In a sibling of the commit written to fix that class of error a
+   fourth time (Q9).** `probe_american_error.py`'s theory-ceiling bracket
    credited the vol-points low end (3.575) to the "moderate" bucket — but
    moderate is only the *dollar* low end ($3.812); the vol-points low end
    is `near_money`, a smaller dollar ceiling divided by that bucket's
@@ -318,12 +318,23 @@ care — the same author wrote the claim and, later, the correction, each
 time. A wrong sum tends to be self-checking; a plausible-sounding
 mechanism is not, because it doesn't look wrong from the inside.
 
-Instance 5 is the one worth sitting with. It landed inside the commit
-written specifically to correct instance 4 — this phase already knew the
-failure mode by name, one bucket-table over, and produced it again
-anyway. Knowing a mistake happens does not confer immunity to making it
-again immediately; the only thing that caught it was the same
-second-pass discipline that caught the first four, applied again.
+Instance 5 is the one worth sitting with. It did not land inside
+instance 4's fix — `f6748d2` and `3d4f3dd` are two single-file commits
+six seconds apart — but it landed in the same batch of corrections,
+written in the same sitting, minutes after this phase had named the
+failure mode out loud. Knowing a mistake happens does not confer
+immunity to making it again immediately; the only thing that caught it
+was the same second-pass discipline that caught the first four.
+
+There is a sixth instance, and it was in the paragraph you are reading.
+Its first draft said instance 5 landed *inside* instance 4's fix. That
+is a stronger claim than the history supports, and it came from this
+project's own working notes rather than from the commits — nobody
+checked `git show --stat` on the two SHAs until a reviewer did, and the
+two commits touch different files. The shape was right: instance 5 did
+follow instance 4 almost immediately. The mechanism — one commit
+containing both — was inferred and stated as fact. Six for six, and
+this one inside the passage arguing that the sixth would happen.
 
 What this costs a project like this one: the whole deliverable is
 evidence-backed answers, each cited to a script, a stored file, or a log
