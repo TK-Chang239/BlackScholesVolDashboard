@@ -223,10 +223,14 @@ def report_itm_quoting_shape(work: pd.DataFrame) -> None:
     print(f"  width as % of spot: median {pct_of_spot.median():.3f}%, std {pct_of_spot.std():.3f}%")
     print(f"  corr(width, mid): {itm_corr:.3f} within this ITM population, "
           f"vs {chain_corr:.3f} chain-wide")
-    print("  Observation only: the width-vs-premium relationship that holds chain-wide is largely absent")
-    print("  inside the ITM band -- a materially flatter, near-constant-fraction-of-spot width regardless of")
-    print("  how deep ITM or how large the premium. This probe does not establish WHY (vendor/market-maker")
-    print("  quoting convention vs. something else); see the liquidity cross-check below for one candidate.")
+    print("  Observation only: the load-bearing evidence for flatness is the MEDIAN/IQR invariance above --")
+    print("  a $3.220 median width with a $3.200-3.280 IQR across a ~40x premium range ($8.57 to $334.33) --")
+    print("  not the corr(width, mid) figure just printed. That correlation is real (a moderate positive")
+    print("  relationship, r^2 ~= 0.21) and should not be read as evidence of flatness; the two co-exist")
+    print("  because a handful of the very largest premiums still pull the linear correlation up even")
+    print("  though the bulk of the band sits on a near-constant-fraction-of-spot step. This probe does not")
+    print("  establish WHY the step exists (vendor/market-maker quoting convention vs. something else);")
+    print("  see the liquidity cross-check below for one candidate.")
 
 
 def report_parity_crosscheck(chain: pd.DataFrame, all3: pd.DataFrame, r: float, q: float) -> None:

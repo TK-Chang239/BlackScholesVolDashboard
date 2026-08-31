@@ -295,8 +295,10 @@ def step2_theory_ceiling(chain: pd.DataFrame, r: float, q: float) -> None:
           f"(${by_bucket_ceiling_usd['deep_otm_put']:.3f}) divided by that bucket's tiny median "
           "vega (0.227/pt). Excluding it for the same reason: the other three buckets' ceiling "
           f"runs ${other_usd.min():.3f}-${other_usd.max():.3f} "
-          f"({other_pts.min():.3f}-{other_pts.max():.3f} vol points; low end from the moderate "
-          "bucket, high end from deep_itm_put). Step 1's measured lower bound on 2026-08-28's "
+          f"({other_pts.min():.3f}-{other_pts.max():.3f} vol points) -- the dollar low end is the "
+          "moderate bucket, the vol-point low end is instead near_money (a smaller dollar ceiling "
+          "divided by that bucket's larger near-the-money vega), and the high end in BOTH units is "
+          "deep_itm_put. Step 1's measured lower bound on 2026-08-28's "
           "in-the-money puts (median ~2.8 vol points on the explained subset) sits below that "
           "range -- consistent with each other, neither one is the true American-minus-European "
           "gap. That gap requires a model this phase does not build.")
