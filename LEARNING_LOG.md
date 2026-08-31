@@ -62,7 +62,7 @@ every expiry, when Black-Scholes says one number should price all of
 them — the IV smile/skew, ATM term structure, skew time-series and
 model-vs-market heatmap panels (P2, P3, P6, P9) measure this daily. On
 the 2026-08-27 chain (the "2026-08-28 — Phase 3: the first page" entry),
-the front-month (21 DTE) smile ran from **~50.5%** IV at a deep-OTM put
+the front-month (22 DTE) smile ran from **~50.5%** IV at a deep-OTM put
 (K=540, moneyness 0.70) through **~11.3–11.4%** near the money to
 **~21%** at the symmetric deep-OTM call (K=905) — the put wing rising
 about 2.4× steeper per unit moneyness than the call wing. The
@@ -260,6 +260,79 @@ the full derivation and its measured caveat: the panel reports the
 *total* P&L, not the gamma-only term the identity isolates, and on one
 trade's nine market-quoted sessions the vega term (−$0.57) was measured
 larger in magnitude than the gamma term (−$0.09).
+
+### A pattern across these ten answers: the shape was always right, the mechanism never was
+
+Five times while building the answers above, this phase asserted a
+confident causal mechanism for a measured effect, and five times a second
+pass re-running the numbers found the measured shape was correct and the
+offered mechanism was not. Naming it once, together, because each
+instance is documented at its own site and nowhere else connects them.
+
+1. **Deep-ITM quote spreads (Q8).** First told as a graded story — market
+   makers pricing near-intrinsic contracts wider "driven by proximity to
+   intrinsic," implying width scales with how deep the contract sits.
+   Measuring the width directly showed a flat step instead: median
+   $3.220, IQR [$3.200, $3.280], invariant across a ~40× premium range
+   ($8.57–$334.33), ~0.42% of spot regardless. `8321701` → `074558f`.
+2. **The vega-decile spread inversion (Q8, same correction).** The
+   highest-vega decile's larger median spread than the lowest-vega
+   decile's was explained by one mechanism, the $0.01 tick floor
+   cancelling tiny-vega noise. That holds for the OTM half (decile 0 is
+   117/128 deep-OTM contracts pinned at the $0.01 tick) but not the ITM
+   half, whose flat $3.22 step — not the tick floor — is what actually
+   drives the inversion. `8321701` → `074558f`.
+3. **A moderate correlation cited as evidence of flatness (Q8).** The
+   corrected script still read corr(width, mid) = 0.456 inside the ITM
+   band and called the width-vs-premium relationship "largely absent."
+   r² ≈ 0.21 is a real, moderate positive relationship and cannot support
+   that reading; the load-bearing evidence for flatness was always the
+   median/IQR invariance above it, not this correlation. `074558f` →
+   `d9d3221`.
+4. **Convergence failures attributed to vega geometry (Q6)**, rather than
+   the illiquidity it is confounded with on this chain: decile-level
+   Spearman(vega decile, median open interest) = 0.915; all 10 of the
+   lowest decile's failures sit in its own lowest open-interest tercile
+   while the other two terciles converge 100%; an open-interest-held-
+   fixed band (200–800 OI) collapses the convergence gradient across
+   every decile represented; all 17 chain-wide non-convergent contracts
+   carry open interest ≤ 270. `34b0e83` → `f6748d2`.
+5. **Inside the very commit written to fix that class of error a fourth
+   time (Q9).** `probe_american_error.py`'s theory-ceiling bracket
+   credited the vol-points low end (3.575) to the "moderate" bucket — but
+   moderate is only the *dollar* low end ($3.812); the vol-points low end
+   is `near_money`, a smaller dollar ceiling divided by that bucket's
+   larger near-the-money vega. `3d4f3dd` → `d9d3221`.
+
+The measured shape survived every one of the five — nothing above was a
+wrong number. What kept being wrong was the mechanism: a claim about
+*why* the shape looks that way, which a median, an IQR, a correlation
+coefficient or a convergence rate does not by itself license. Measuring
+a step is not the same act as explaining one, and this phase kept
+collapsing the two.
+
+Every one of the five catches came from a second pass re-running the
+numbers against the printed claim; none came from the pass that produced
+the claim. That is an observation about process, not about anyone's
+care — the same author wrote the claim and, later, the correction, each
+time. A wrong sum tends to be self-checking; a plausible-sounding
+mechanism is not, because it doesn't look wrong from the inside.
+
+Instance 5 is the one worth sitting with. It landed inside the commit
+written specifically to correct instance 4 — this phase already knew the
+failure mode by name, one bucket-table over, and produced it again
+anyway. Knowing a mistake happens does not confer immunity to making it
+again immediately; the only thing that caught it was the same
+second-pass discipline that caught the first four, applied again.
+
+What this costs a project like this one: the whole deliverable is
+evidence-backed answers, each cited to a script, a stored file, or a log
+line that says the number. A wrong mechanism is more dangerous to that
+deliverable than a wrong number, because it sits on top of a number that
+is actually correct and inherits that number's credibility — a review
+that checks only the cited figure will wave it through. All five were
+caught before this document shipped. The finding is which pass did the
+catching, and it was never the first one.
 
 ## Phase 0 findings — EODHD data access
 

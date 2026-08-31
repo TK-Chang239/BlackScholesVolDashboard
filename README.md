@@ -152,10 +152,11 @@ panels.
 Mostly a price: across the 64 sessions this project has archived, the
 ~30-day at-the-money implied vol has come in above what the market
 subsequently realized on **81%** of the 37 sessions old enough to grade —
-a persistent premium collected for bearing risk, not a forecast that
-just misses randomly. See the **Implied vs realized vol** panel; the
-currently published page shows an earlier, smaller snapshot of this same
-statistic while the daily-automation criterion below is still accruing.
+enough to look like a persistent premium collected for bearing risk
+rather than a forecast that just misses randomly. See the **Implied vs
+realized vol** panel; the currently published page still shows its
+earlier render, **1 evaluable session**, while the daily-automation
+criterion below is still accruing.
 
 **4. The model claims you can hedge an option perfectly. Can you?**
 Not exactly: re-hedging once a day instead of continuously leaves real
