@@ -214,6 +214,15 @@ def step1_parity_residue(chain: pd.DataFrame, r: float, q: float) -> None:
           "same size would fit the same bound. And parity cannot see any mispricing that is smaller "
           "than the combined bid-ask spread, so whatever this test finds is a floor, not a ceiling, "
           "on where the true error sits.")
+    print("One more reason it is a floor: near an ex-dividend date, a deep in-the-money AMERICAN "
+          "CALL can itself carry early-exercise value (the textbook reason to exercise a call "
+          "early at all is to capture a dividend), which would price that call ABOVE its European "
+          "value and partially OFFSET the put-rich residue this test reads off C - P. This is not "
+          "checked here -- it would need cross-referencing Step 3's ex-dividend dates against "
+          "which of these pairs' calls are deep ITM near one, which is beyond this probe's scope "
+          "-- but if it is happening on any of these pairs, it only strengthens the lower-bound "
+          "direction: the true American-minus-European gap would be LARGER than deviation_fwd "
+          "shows here, never smaller.")
 
 
 # --------------------------------------------------------------------------
@@ -273,11 +282,24 @@ def step2_theory_ceiling(chain: pd.DataFrame, r: float, q: float) -> None:
           "T, r, q, S, and the illiquid population happens to skew toward higher strikes and longer "
           "tenors, not because illiquidity itself inflates the bound. Restricting Step 2 to liquid "
           "pairs is therefore the conservative choice for the headline, not the one that flatters it.")
-    print("\nBracket, stated plainly: Step 1's measured lower bound on 2026-08-28's in-the-money "
-          "puts (median ~2.8 vol points on the explained subset) sits below this theory-side "
-          "ceiling (median ~3.6-9.6 vol points across buckets) -- consistent with each other, "
-          "neither one is the true American-minus-European gap. That gap requires a model this "
-          "phase does not build.")
+    by_bucket_ceiling_usd = liq.groupby("bucket")["rigorous_ceiling"].median()
+    by_bucket_ceiling_pts = liq.groupby("bucket")["ceiling_vol_pts"].median()
+    other_buckets = [b for b in by_bucket_ceiling_pts.index if b != "deep_otm_put"]
+    other_usd = by_bucket_ceiling_usd.loc[other_buckets]
+    other_pts = by_bucket_ceiling_pts.loc[other_buckets]
+    print(f"\nBracket, stated plainly: the ceiling-vol-points column above spans "
+          f"{by_bucket_ceiling_pts.min():.3f}-{by_bucket_ceiling_pts.max():.3f} across all four "
+          f"buckets, but the deep_otm_put entry ({by_bucket_ceiling_pts['deep_otm_put']:.3f} vol "
+          "points) is the same low-vega conditioning artifact Step 1 already flags for that "
+          "bucket's deviation column -- an unremarkable dollar ceiling "
+          f"(${by_bucket_ceiling_usd['deep_otm_put']:.3f}) divided by that bucket's tiny median "
+          "vega (0.227/pt). Excluding it for the same reason: the other three buckets' ceiling "
+          f"runs ${other_usd.min():.3f}-${other_usd.max():.3f} "
+          f"({other_pts.min():.3f}-{other_pts.max():.3f} vol points; low end from the moderate "
+          "bucket, high end from deep_itm_put). Step 1's measured lower bound on 2026-08-28's "
+          "in-the-money puts (median ~2.8 vol points on the explained subset) sits below that "
+          "range -- consistent with each other, neither one is the true American-minus-European "
+          "gap. That gap requires a model this phase does not build.")
 
 
 # --------------------------------------------------------------------------
