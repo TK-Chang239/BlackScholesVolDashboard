@@ -32,6 +32,20 @@ they are never confused for one another:
     THIS CONTRACT ACTUALLY REPORTS move for a penny of price noise" -- a
     question that only makes sense at a point where an IV exists.
 
+THE ANSWER, up front: Step 2.2's conditioning number is the clean one.
+Delta-sigma = Delta-price / vega is arithmetic, not a claim needing a
+liquidity control, and it shows a penny of price noise moves a deep-OTM
+implied vol ~8.5x further than an at-the-money one on this session. Step
+2.1's convergence-vs-vega-decile result corroborates that story but turns
+out to be CONFOUNDED with open interest on this chain -- low-vega
+contracts here also tend to be thinly held, an OI-held-fixed control
+collapses the convergence gradient, and open interest predicts convergence
+about as well as vega does (Spearman ~0.14 either way). Step 2.1 is
+reported below in full, with that confound measured rather than argued
+away, because the brief asks for the bucketed convergence test regardless;
+it should be read as suggestive, not as proof that geometry alone drives
+non-convergence independent of liquidity.
+
 No pricing libraries: every price, vol and vega below comes from this
 repo's own `src.models.black_scholes`. Offline: reads only the stored
 parquet under `data/chains/`, `docs/status.json` and `config.yaml`.
@@ -267,11 +281,65 @@ def step2_convergence(chain_iv: pd.DataFrame, r: float, q: float) -> None:
           f"{100.0 * (lowest['open_interest'].fillna(0) <= 0).mean():.1f}% zero-OI. "
           f"Highest vega decile: {100.0 * highest['iv'].notna().mean():.1f}% convergence, "
           f"median open interest {highest['open_interest'].median():.0f}.")
-    print("Liquidity check (requested explicitly, not assumed): open-interest and volume medians "
-          "do NOT fall monotonically with vega decile the way convergence does -- the lowest-vega "
-          "decile is not the most illiquid one by open interest. The convergence failures track "
-          "the vega geometry itself, not simply a population of dead quotes; this is measured on "
-          "this session's OI/volume columns, not inferred from the shape of the failure curve alone.")
+    print("\nLiquidity confound check (requested explicitly, not assumed) -- corrected after review:")
+    df["converged"] = df["iv"].notna().astype(int)
+    dec_med_oi = df.groupby("vega_decile")["open_interest"].median().reset_index()
+    rho_decile = dec_med_oi["vega_decile"].corr(dec_med_oi["open_interest"], method="spearman")
+    rho_vega = df["vega_geo_pv"].corr(df["converged"], method="spearman")
+    rho_oi = df["open_interest"].corr(df["converged"], method="spearman")
+    print(f"  Median open interest by decile RISES with vega decile (see table above: "
+          f"{int(df.loc[df['vega_decile']==0,'open_interest'].median())} in decile 0 up to "
+          f"{int(highest['open_interest'].median())} in decile {n_deciles - 1}) -- "
+          f"Spearman(decile index, median OI) = {rho_decile:.3f}. Contract-level, open interest "
+          f"predicts convergence about as well as vega does: Spearman(vega, converged) = "
+          f"{rho_vega:.3f} vs Spearman(open_interest, converged) = {rho_oi:.3f}. Vega and liquidity "
+          "are confounded in this session, not independent -- median OI is the metric a reader sees "
+          "next to the decile column above, and it does not support a 'not simply illiquidity' claim.")
+
+    lowest_t = lowest.copy()
+    lowest_t["oi_tercile"] = pd.qcut(lowest_t["open_interest"], 3, labels=False, duplicates="drop")
+    tert = lowest_t.groupby("oi_tercile").agg(
+        n=("iv", "size"), n_conv=("iv", lambda s: s.notna().sum()),
+        oi_min=("open_interest", "min"), oi_max=("open_interest", "max"))
+    decile0_failures = len(lowest) - int(lowest["iv"].notna().sum())
+    print(f"\n  Within the lowest vega decile alone (n={len(lowest)}, {decile0_failures} failures), "
+          "split by open-interest tercile:")
+    for t, row in tert.iterrows():
+        n, n_conv = int(row["n"]), int(row["n_conv"])
+        n_fail = n - n_conv
+        share = f"{n_fail} of this decile's {decile0_failures} failures" if n_fail else "0 failures"
+        print(f"    tercile {int(t)} (OI {row['oi_min']:.0f}-{row['oi_max']:.0f}): n={n}, "
+              f"{100.0 * n_conv / n:.1f}% converged, {share}")
+
+    band = df[(df["open_interest"] >= 200) & (df["open_interest"] <= 800)]
+    band_tab = band.groupby("vega_decile").agg(n=("iv", "size"), n_conv=("iv", lambda s: s.notna().sum()))
+    band_tab["conv_rate"] = 100.0 * band_tab["n_conv"] / band_tab["n"]
+    d0_band = (f"{int(band_tab.loc[0, 'n'])} contracts, {band_tab.loc[0, 'conv_rate']:.1f}% converged"
+               if 0 in band_tab.index else "no contracts in this band")
+    print(f"\n  Holding open interest roughly fixed (band 200-800, n={len(band)} contracts spread "
+          f"across deciles 0-{int(band_tab.index.max())}): convergence is "
+          f"{band_tab['conv_rate'].min():.1f}%-{band_tab['conv_rate'].max():.1f}% in every decile "
+          f"represented, including decile 0 itself ({d0_band}) -- the gradient in the full-chain "
+          "table above collapses once liquidity is held roughly constant.")
+
+    fail = df[df["iv"].isna()]
+    print(f"\n  All {len(fail)} chain-wide non-convergent contracts have open interest <= "
+          f"{fail['open_interest'].max():.0f} (median {fail['open_interest'].median():.0f}).")
+
+    print("\n  CONCLUSION: this session cannot separate the vega-geometry explanation from a "
+          "liquidity explanation -- the two are confounded here (low-vega contracts in this "
+          "session's expiry structure also tend to have low open interest), and the OI-tercile "
+          "and OI-held-fixed tests above show open interest carries at least as much of the "
+          "convergence signal as vega does. The convergence-vs-vega-decile result is SUGGESTIVE, "
+          "not a demonstration that geometry drives non-convergence independent of liquidity; "
+          "dropped here is the earlier, unsupported claim that these are 'not simply a population "
+          "of dead quotes' -- the OI evidence points the other way. (One secondary metric, the "
+          "SHARE of each decile with exactly zero open interest, does NOT rise monotonically with "
+          f"vega decile -- decile 0's zero-OI share, {100.0 * (lowest['open_interest'].fillna(0) <= 0).mean():.1f}%, "
+          "is the lowest of any decile. That disagreement between two different liquidity metrics "
+          "is itself worth noting, but it does not rescue a geometry-only causal claim; it is "
+          "reported here explicitly as the zero-OI-rate metric, not folded into a broader "
+          "'liquidity' claim the median-OI numbers above contradict.)")
 
 
 # --------------------------------------------------------------------------
@@ -344,6 +412,19 @@ def main() -> None:
     step2_convergence(chain_iv, r, q)
     step2_conditioning(chain_iv, r, q)
 
+    print("\n--- The answer to Q6's second half ---")
+    print("Lead with Step 2.2: Delta-sigma = Delta-price / vega is an arithmetic identity, not a "
+          "causal claim needing a liquidity control -- a one-cent price error moves a deep-OTM "
+          "implied vol roughly 8.5x further than an at-the-money one (median 0.0788 vs 0.0092 vol "
+          "points, this session), simply because the denominator is an order of magnitude smaller "
+          "at the wings. That is the clean, unconfounded answer to 'what does the geometry do to "
+          "inversion': it makes the SAME dollar or cent of noise translate into a much larger vol "
+          "error off the money, mechanically, every time.")
+    print("Step 2.1's convergence-vs-vega-decile result is corroborating but confounded: vega and "
+          "open interest move together in this session (Spearman(decile, median OI) computed "
+          "above), and an OI-held-fixed control collapses the convergence gradient. It is "
+          "consistent with the geometry story; it does not, on its own, prove it independent of "
+          "liquidity.")
     print("\nDone.")
 
 
