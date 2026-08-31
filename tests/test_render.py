@@ -1423,9 +1423,28 @@ class TestNarrowScreenFigures:
 
     def test_two_column_figures_are_marked(self):
         from src.analytics.sensitivity import compute_sensitivity
-        from src.render.figures import build_sensitivity_figure
+        from src.render.figures import (
+            build_greeks_curves_figure, build_model_vs_market_figure, build_sensitivity_figure,
+        )
         sens = compute_sensitivity(100.0, 0.2, 30.0, 0.04, 0.013, 0.2)
         fig = build_sensitivity_figure(sens, 0.2)
+        assert (fig.layout.meta or {}).get("stack_narrow") is True
+
+        # A non-empty frame for both: their `.empty` branch returns
+        # `empty_figure`, which carries no `meta` at all -- an empty DataFrame
+        # here would never exercise the marked path this test exists to guard.
+        curves = pd.DataFrame({
+            "kind": ["call", "put"], "strike": [760.0, 760.0], "moneyness": [0.987, 0.987],
+            "delta": [0.6, -0.4], "gamma": [0.02, 0.02]})
+        fig = build_greeks_curves_figure(curves, 770.0)
+        assert (fig.layout.meta or {}).get("stack_narrow") is True
+
+        mvm = pd.DataFrame([{
+            "kind": "call", "expiry": dt.date(2026, 9, 25), "dte": 28, "strike": 800.0,
+            "moneyness": 800.0 / 770.0, "market": 10.0, "model": 9.65,
+            "deviation_pct": 0.035, "deviation_vol": 0.01, "quoted": True, "within_spread": False,
+        }])
+        fig = build_model_vs_market_figure(mvm, 0.12)
         assert (fig.layout.meta or {}).get("stack_narrow") is True
 
     def test_single_column_figures_are_not_marked(self):
