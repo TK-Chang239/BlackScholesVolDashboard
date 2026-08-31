@@ -9,7 +9,7 @@ dashboard comparing what the model says to what the market does. The gap
 between the two — measured daily, in nine panels — is the subject of this
 project.
 
-**Live dashboard:** https://tk-chang239.github.io/BlackScholesVolDashboard/ ·
+**Live dashboard:** https://tk-chang239.github.io/BlackScholesVolDashboard/docs/ ·
 Updated automatically after each US close via GitHub Actions.
 
 ---
