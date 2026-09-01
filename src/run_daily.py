@@ -7,10 +7,16 @@ untouched, so the Action exits nonzero and yesterday's dashboard stays live.
 write, if a freshly filtered chain would replace an already-stored one with
 far fewer rows (e.g. an off-hours run against a thin book), so a degraded
 chain can never silently overwrite a good one in the archive.
+
+That refusal is the one failure `main` does not always report as one. Nothing
+is written either way, but whether it means something is broken depends on
+whether a book existed to fetch -- see `book_should_be_full`.
 """
 import datetime as dt
+import os
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -58,22 +64,61 @@ CARRY_MIN_DTE = 84       # below this a dollar of forward error is a huge "rate"
 # closed book does.
 MIN_CHAIN_RETENTION = 0.5
 
+MARKET_TZ = ZoneInfo("America/New_York")
+
+# The chain fetch is a LIVE snapshot labelled with the last completed session,
+# so what it returns depends on when the job runs. `filter_chain` keeps only
+# `bid > 0 & ask > 0`, and outside the hours a book exists almost nothing is
+# quoted. From the regular open onward there is a book to fetch -- during the
+# session it is live, and after the 16:00 close the day's quotes persist -- so
+# a shrink from here on is a real defect. Before the open there is nothing to
+# see and a shrink says only that the job ran early (or, as in run
+# 33477912528, that GitHub dispatched the cron five hours late).
+BOOK_FULL_FROM_ET = dt.time(9, 30)
+
+
+class ChainRetentionRefusal(RuntimeError):
+    """`_check_overwrite_shrink` declined to replace a stored chain.
+
+    A distinct type so `main` can tell "the book was shut" apart from a
+    genuine failure. It stays a `RuntimeError` because every caller other than
+    `main` -- offline replay, the tests -- should keep treating it as one.
+    """
+
+
+def book_should_be_full(now_utc: dt.datetime) -> bool:
+    """Was there a full book to fetch at `now_utc`, so a thin one is a defect?
+
+    Weekends are excluded because nothing has traded since Friday's close.
+    Market holidays are deliberately not modelled: a holiday evening still
+    serves the previous session's quotes, and buying a market calendar to
+    silence a once-a-year false alarm costs more than the alarm.
+    """
+    now_et = now_utc.astimezone(MARKET_TZ)
+    if now_et.weekday() >= 5:
+        return False
+    return now_et.time() >= BOOK_FULL_FROM_ET
+
 
 def _check_overwrite_shrink(chain: pd.DataFrame, session_date: dt.date, root: Path) -> None:
     """Refuse to replace a stored chain with a drastically smaller one.
 
     Runs in the compute stage, before any write (SPEC 2.1): raising here
     leaves the stored chain, daily_metrics, page and status all untouched, so
-    the job exits non-zero and yesterday's dashboard stays live. Only applies
-    when a chain for `session_date` is already on disk -- a first-ever write
-    for a session has nothing to compare against and must proceed.
+    yesterday's dashboard stays live. Only applies when a chain for
+    `session_date` is already on disk -- a first-ever write for a session has
+    nothing to compare against and must proceed.
+
+    Raises `ChainRetentionRefusal` rather than a bare `RuntimeError` so `main`
+    can decide whether it deserves a non-zero exit; every other caller can go
+    on treating it as the `RuntimeError` it still is.
     """
     if not storage.chain_exists(session_date, root):
         return
     stored_rows = len(pd.read_parquet(storage.chain_path(session_date, root)))
     new_rows = len(chain)
     if new_rows < MIN_CHAIN_RETENTION * stored_rows:
-        raise RuntimeError(
+        raise ChainRetentionRefusal(
             f"refusing to overwrite the stored chain for session "
             f"{session_date.isoformat()}: the freshly filtered chain has "
             f"{new_rows} rows vs {stored_rows} currently stored in "
@@ -342,20 +387,59 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
     return status
 
 
-def main() -> None:
+def _providers(cfg: dict, root: Path):
+    """The real vendor trio, split out so `main`'s triage below can be tested
+    without credentials or a network."""
     from src.data.envfile import get_secret
     from src.data.eodhd_provider import EODHDProvider
     from src.data.massive_provider import MassiveProvider
     from src.data.yfinance_provider import YFinanceProvider
 
+    return (EODHDProvider(get_secret("EODHD_API_TOKEN", root / ".env"), cfg),
+            YFinanceProvider(cfg),
+            MassiveProvider(get_secret("MASSIVE_API_KEY", root / ".env"), cfg))
+
+
+def _github_output(key: str, value: str) -> None:
+    """Publish a step output under Actions; a no-op anywhere else."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    with open(path, "a") as f:
+        f.write(f"{key}={value}\n")
+
+
+def _annotation(message: str) -> str:
+    """Escape a message for a `::warning::` workflow command. The refusal text
+    quotes a literal `%` (the retention floor), which GitHub would eat."""
+    return message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def main() -> None:
+    import json
+
     root = Path(__file__).resolve().parent.parent
     with open(root / "config.yaml") as f:
         cfg = yaml.safe_load(f)
-    eodhd = EODHDProvider(get_secret("EODHD_API_TOKEN", root / ".env"), cfg)
-    live = YFinanceProvider(cfg)
-    fallback = MassiveProvider(get_secret("MASSIVE_API_KEY", root / ".env"), cfg)
-    status = run(eodhd, live, fallback, cfg, root)
-    import json
+    eodhd, live, fallback = _providers(cfg, root)
+
+    try:
+        status = run(eodhd, live, fallback, cfg, root)
+    except ChainRetentionRefusal as refusal:
+        # During the hours a book exists a refusal is a real defect and must
+        # stay red. Outside them it says only that the job ran when there was
+        # nothing to fetch: the stored chain is untouched and yesterday's
+        # dashboard is still live, so failing here would report a problem that
+        # does not exist and teach the reader to ignore red runs.
+        if book_should_be_full(dt.datetime.now(dt.timezone.utc)):
+            raise
+        print(f"::warning title=Daily snapshot skipped::{_annotation(str(refusal))}")
+        print(f"skipped: ran outside market hours, nothing published; {refusal}",
+              file=sys.stderr)
+        _github_output("published", "false")
+        return
+
+    _github_output("published", "true")
     print(json.dumps(status, indent=2))
 
 

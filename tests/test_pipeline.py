@@ -14,6 +14,7 @@ import yaml
 
 from src.data import storage
 from src.data.base import CHAIN_COLUMNS, UNDERLYING_COLUMNS
+from src import run_daily
 from src.run_daily import run
 
 TODAY = dt.date(2026, 8, 28)
@@ -703,3 +704,106 @@ class TestDailyMetricsStage:
             run(NextDayEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path,
                 today=TODAY + dt.timedelta(days=1))
         assert storage.daily_metrics_path(tmp_path).read_bytes() == before
+
+
+class TestRefusalTriage:
+    """A retention refusal is a defect only if a full book existed to fetch.
+
+    GitHub dispatched scheduled run 33477912528 five hours after its 01:30 UTC
+    slot, landing at 02:30 ET against a shut book, where `filter_chain`'s
+    `bid > 0 & ask > 0` rule cut the chain to 32 rows against 1440 stored. The
+    guard was right to refuse; the red run was the false alarm, and a guard
+    that cries wolf on every late cron teaches the reader to ignore red runs.
+    """
+
+    LATE_CRON = dt.datetime(2026, 9, 1, 6, 30, 42, tzinfo=dt.timezone.utc)   # 02:30 ET Tue
+    AFTER_CLOSE = dt.datetime(2026, 9, 1, 2, 16, 5, tzinfo=dt.timezone.utc)  # 22:16 ET Mon
+    MIDSESSION = dt.datetime(2026, 9, 1, 17, 0, tzinfo=dt.timezone.utc)      # 13:00 ET Tue
+    PRE_MARKET = dt.datetime(2026, 8, 31, 9, 45, tzinfo=dt.timezone.utc)     # 05:45 ET Mon
+    WINTER_CRON = dt.datetime(2026, 1, 15, 2, 17, tzinfo=dt.timezone.utc)    # 21:17 EST Wed
+    SATURDAY = dt.datetime(2026, 9, 5, 6, 30, tzinfo=dt.timezone.utc)        # 02:30 ET Sat
+
+    def test_the_late_cron_that_actually_failed_is_not_expected_to_see_a_book(self):
+        assert not run_daily.book_should_be_full(self.LATE_CRON)
+
+    def test_the_post_close_window_the_cron_targets_is(self):
+        assert run_daily.book_should_be_full(self.AFTER_CLOSE)
+
+    def test_the_new_cron_slot_is_after_the_close_in_winter_too(self):
+        # 02:17 UTC is 22:17 ET under EDT but 21:17 ET under EST; both must
+        # count as post-close, or the guard would go quiet half the year.
+        assert run_daily.book_should_be_full(self.WINTER_CRON)
+
+    def test_a_shrink_during_the_session_is_never_excused(self):
+        assert run_daily.book_should_be_full(self.MIDSESSION)
+
+    def test_the_original_pre_market_defect_is_also_recognised_as_off_hours(self):
+        # 05:45 ET, the incident MIN_CHAIN_RETENTION was written for.
+        assert not run_daily.book_should_be_full(self.PRE_MARKET)
+
+    def test_nothing_has_traded_since_friday_by_saturday_morning(self):
+        assert not run_daily.book_should_be_full(self.SATURDAY)
+
+    def test_the_guard_raises_a_type_the_caller_can_single_out(self):
+        assert issubclass(run_daily.ChainRetentionRefusal, RuntimeError)
+
+    def test_the_guard_actually_raises_that_type(self, tmp_path):
+        storage.write_chain(flat_chain(20), TODAY, tmp_path)
+        with pytest.raises(run_daily.ChainRetentionRefusal):
+            run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+
+
+class TestMainTriagesTheRefusal:
+    """`main` is where a refusal becomes an exit code, so the branch lives here
+    and not in `run`, which offline replay and every test call directly."""
+
+    @staticmethod
+    def _wire(monkeypatch, tmp_path, outcome, book_full):
+        monkeypatch.setattr(run_daily, "_providers", lambda cfg, root: (None, None, None))
+        monkeypatch.setattr(run_daily, "book_should_be_full", lambda now: book_full)
+
+        def fake_run(eodhd, live, fallback, cfg, root, today=None):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(run_daily, "run", fake_run)
+        out = tmp_path / "gh_output"
+        out.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+        return out
+
+    def test_an_off_hours_refusal_exits_clean_and_reports_nothing_published(
+            self, monkeypatch, tmp_path, capsys):
+        refusal = run_daily.ChainRetentionRefusal("32 rows vs 1440, below the 50% floor")
+        out = self._wire(monkeypatch, tmp_path, refusal, book_full=False)
+        run_daily.main()                      # must not raise
+        assert "published=false" in out.read_text()
+        captured = capsys.readouterr().out
+        assert "::warning" in captured        # visible on the run, not silent
+        assert "%25" in captured              # the literal % is escaped for GitHub
+
+    def test_a_refusal_while_the_book_was_full_still_fails_loudly(
+            self, monkeypatch, tmp_path):
+        refusal = run_daily.ChainRetentionRefusal("32 rows vs 1440")
+        self._wire(monkeypatch, tmp_path, refusal, book_full=True)
+        with pytest.raises(run_daily.ChainRetentionRefusal):
+            run_daily.main()
+
+    def test_an_unrelated_failure_is_never_excused_by_the_clock(
+            self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, tmp_path, RuntimeError("both sources empty"),
+                   book_full=False)
+        with pytest.raises(RuntimeError, match="both sources empty"):
+            run_daily.main()
+
+    def test_a_normal_run_reports_that_it_published(self, monkeypatch, tmp_path, capsys):
+        out = self._wire(monkeypatch, tmp_path, {"rows_stored": 1440}, book_full=True)
+        run_daily.main()
+        assert "published=true" in out.read_text()
+        assert "1440" in capsys.readouterr().out
+
+    def test_no_github_output_file_is_not_a_crash(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, tmp_path, {"rows_stored": 1440}, book_full=True)
+        monkeypatch.delenv("GITHUB_OUTPUT")
+        run_daily.main()          # running locally must still work
