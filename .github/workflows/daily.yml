@@ -1,10 +1,20 @@
 name: daily
 
-# 30 1 * * 2-6 UTC ~= 21:30 ET Mon-Fri: after the US close and after EOD data
-# settles. Tue-Sat in UTC covers Mon-Fri US sessions (SPEC 2.1).
+# 17 2 * * 2-6 UTC ~= 22:17 ET Mon-Fri (21:17 under EST): after the US close
+# and after EOD data settles. Tue-Sat in UTC covers Mon-Fri US sessions (SPEC
+# 2.1). Running earlier is not an option -- the session date comes from the
+# latest EOD bar, so firing before that bar publishes would label the chain
+# with the wrong session.
+#
+# The odd minute is deliberate. GitHub does not promise punctuality and delays
+# scheduled runs most at :00 and :30; run 33477912528 was dispatched five
+# hours after its old 01:30 slot, landing at 02:30 ET where the book is shut
+# and the fetch comes back thin. That is a smaller target, not a guarantee, so
+# run_daily also triages a late run rather than failing red (see
+# `book_should_be_full`).
 on:
   schedule:
-    - cron: "30 1 * * 2-6"
+    - cron: "17 2 * * 2-6"
   workflow_dispatch:
 
 # A run commits to main. Never let two runs race for the same push, and never
@@ -44,13 +54,23 @@ jobs:
       # SPEC 2.1 failure policy: run_daily computes everything before it writes
       # anything and raises on failure, so a non-zero exit here simply leaves
       # yesterday's dashboard live. Do not wrap this in error handling.
+      #
+      # It has one clean exit that publishes nothing: a retention refusal while
+      # the book was shut, which means the job ran when there was nothing to
+      # fetch rather than that anything broke. It says so on `published`.
       - name: Run the daily pipeline
+        id: pipeline
         env:
           EODHD_API_TOKEN: ${{ secrets.EODHD_API_TOKEN }}
           MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
         run: python -m src.run_daily
 
+      # Gate on the pipeline saying it published, not on the working tree being
+      # dirty: an off-hours refusal exits 0 (it is not a defect) but `run` has
+      # already upserted the underlying bars by then, so a dirty-tree check
+      # would commit a "daily snapshot" containing no snapshot.
       - name: Commit the new snapshot
+        if: steps.pipeline.outputs.published == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

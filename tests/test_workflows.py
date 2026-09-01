@@ -24,7 +24,26 @@ class TestDailyWorkflow:
 
     def test_cron_is_the_spec_schedule(self):
         triggers = load(DAILY)["on"]
-        assert triggers["schedule"] == [{"cron": "30 1 * * 2-6"}]
+        assert triggers["schedule"] == [{"cron": "17 2 * * 2-6"}]
+
+    def test_cron_avoids_the_hour_and_half_hour_github_congests(self):
+        # GitHub does not promise punctuality and delays scheduled runs most at
+        # :00 and :30. Run 33477912528 was dispatched five hours after its
+        # 01:30 slot, into 02:30 ET, where the book is shut and the fetch comes
+        # back thin. An odd minute is not a guarantee, only a smaller target.
+        minute = int(load(DAILY)["on"]["schedule"][0]["cron"].split()[0])
+        assert minute % 30 != 0, "':00' and ':30' are the most congested slots"
+
+    def test_cron_still_lands_after_the_us_close_in_both_dst_regimes(self):
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        minute, hour = (int(f) for f in load(DAILY)["on"]["schedule"][0]["cron"].split()[:2])
+        et = ZoneInfo("America/New_York")
+        for summer_or_winter in (dt.date(2026, 9, 2), dt.date(2026, 1, 15)):
+            fired = dt.datetime.combine(summer_or_winter, dt.time(hour, minute),
+                                        tzinfo=dt.timezone.utc).astimezone(et)
+            # after the 16:00 close, and before midnight rolls the book over
+            assert dt.time(16, 0) < fired.time() < dt.time(23, 59), fired
 
     def test_manual_dispatch_is_available(self):
         assert "workflow_dispatch" in load(DAILY)["on"]
@@ -65,6 +84,28 @@ class TestDailyWorkflow:
         # any manual recovery dispatch queued behind it.
         timeout = load(DAILY)["jobs"]["daily"]["timeout-minutes"]
         assert 0 < timeout < 360
+
+    def test_commit_is_skipped_when_the_pipeline_did_not_publish(self):
+        # An off-hours refusal exits 0 so the run is not a false red, but
+        # `run` has already upserted the underlying bars by then, so `git add
+        # data docs` would find a diff and commit a "daily snapshot" that
+        # contains no snapshot. Gate the commit on the pipeline saying it
+        # published rather than on the working tree being dirty.
+        steps = load(DAILY)["jobs"]["daily"]["steps"]
+        pipeline = next(s for s in steps if "src.run_daily" in s.get("run", ""))
+        commit = next(s for s in steps if "git commit" in s.get("run", ""))
+        assert pipeline.get("id"), "the commit step needs a step to refer to"
+        assert commit.get("if") == f"steps.{pipeline['id']}.outputs.published == 'true'"
+
+    def test_a_failed_pipeline_still_never_reaches_the_commit(self):
+        # A custom `if:` on a step is implicitly ANDed with success(), so
+        # gating on the published output does not re-open the commit on a
+        # failed run -- but only while the expression names no status
+        # function. always()/failure() would opt it back in.
+        commit = next(s for s in load(DAILY)["jobs"]["daily"]["steps"]
+                      if "git commit" in s.get("run", ""))
+        for escape_hatch in ("always()", "failure()", "cancelled()"):
+            assert escape_hatch not in commit["if"], escape_hatch
 
     def test_commit_is_conditional_on_a_real_change(self):
         steps = load(DAILY)["jobs"]["daily"]["steps"]
