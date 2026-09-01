@@ -4,13 +4,15 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
-from src.render.base import LAYOUT as _LAYOUT, empty_figure as _empty_figure
+from src.render import theme
+from src.render.base import (LAYOUT as _LAYOUT, empty_figure as _empty_figure,
+                            subplots as _subplots)
 
 # P7 carries a note above the plot area (close-based, or the early-exercise
-# count), so it needs more headroom between the title and the top row of cells.
-_PARITY_LAYOUT = {**_LAYOUT, "margin": dict(l=50, r=20, t=118, b=45)}
+# count), so it needs more headroom above the top row of cells than a panel
+# whose plot starts right under the card head.
+_PARITY_LAYOUT = {**_LAYOUT, "margin": dict(l=54, r=20, t=76, b=45)}
 
 
 def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
@@ -21,17 +23,25 @@ def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
             xaxis_title="Moneyness K/S", yaxis_title="Implied vol",
             yaxis_tickformat=".0%")
     fig = go.Figure()
-    for (expiry, dte), g in smile.groupby(["expiry", "dte"], sort=True):
+    # Expiries are ordered, not merely distinct, so they take theme.SEQUENCE --
+    # a ramp monotone in lightness, nearest expiry darkest -- rather than six
+    # competing hues. Six hues legible against each other AND against warm
+    # paper do not exist in this design system; see theme.PALETTE_NOTES.
+    groups = list(smile.groupby(["expiry", "dte"], sort=True))
+    shades = theme.ramp(len(groups))
+    for i, ((expiry, dte), g) in enumerate(groups):
         g = g.sort_values("strike")
+        shade = shades[i]
         fig.add_trace(go.Scatter(
             x=g["moneyness"], y=g["iv"], mode="lines+markers",
             name=f"{expiry.isoformat()} ({dte}d)",
+            line=dict(color=shade), marker=dict(color=shade, size=5),
             hovertemplate="K/S %{x:.3f}<br>IV %{y:.1%}<extra></extra>",
         ))
     fig.add_trace(go.Scatter(
         x=[1.0, 1.0], y=[smile["iv"].min(), smile["iv"].max()],
         mode="lines", name="ATM (K = S)",
-        line=dict(dash="dot", color="grey", width=1),
+        line=dict(dash="dot", color=theme.REFERENCE, width=1),
         hoverinfo="skip",
     ))
     fig.update_layout(
@@ -48,12 +58,13 @@ def build_term_structure_figure(today: pd.DataFrame,
     if previous is not None and len(previous):
         fig.add_trace(go.Scatter(
             x=previous["dte"], y=previous["atm_iv"], mode="lines+markers",
-            name=previous_label, line=dict(color="lightgrey"),
-            marker=dict(color="lightgrey"),
+            name=previous_label, line=dict(color=theme.MUTED),
+            marker=dict(color=theme.MUTED),
             hovertemplate=f"%{{x}}d: %{{y:.1%}}<extra>{previous_label}</extra>"))
     fig.add_trace(go.Scatter(
         x=today["dte"], y=today["atm_iv"], mode="lines+markers",
-        name="today",
+        name="today", line=dict(color=theme.SERIES_INK),
+        marker=dict(color=theme.SERIES_INK),
         hovertemplate="%{x}d: %{y:.1%}<extra>today</extra>"))
     fig.update_layout(
         title="ATM implied vol term structure",
@@ -66,7 +77,7 @@ def build_sensitivity_figure(sens: pd.DataFrame, bump: float) -> go.Figure:
     title = f"Which input moves the price? ±{bump:.0%} on each, ~30-DTE ATM call"
     if sens.empty or sens["up_pct"].isna().all():
         return _empty_figure(title, "No ATM implied vol for this session")
-    fig = make_subplots(
+    fig = _subplots(
         rows=1, cols=2, horizontal_spacing=0.14,
         subplot_titles=("Inputs the market argues about", "Inputs everyone observes"))
     for col, group in ((1, "argued"), (2, "observed")):
@@ -75,8 +86,8 @@ def build_sensitivity_figure(sens: pd.DataFrame, bump: float) -> go.Figure:
         # -100%) don't push an outside label left into the y-axis category labels;
         # up bars stay OUTSIDE since they never crowd the axis.
         for tag, color, name, textposition, insidetextanchor in (
-                ("down_pct", "#c44e52", f"input −{bump:.0%}", "inside", "start"),
-                ("up_pct", "#4c72b0", f"input +{bump:.0%}", "outside", None)):
+                ("down_pct", theme.SERIES_CONTRAST, f"input −{bump:.0%}", "inside", "start"),
+                ("up_pct", theme.SERIES_INK, f"input +{bump:.0%}", "outside", None)):
             bar_kwargs = dict(
                 y=g["label"], x=g[tag], orientation="h", name=name,
                 marker_color=color, showlegend=(col == 1),
@@ -95,9 +106,9 @@ def build_greeks_curves_figure(curves: pd.DataFrame, spot: float) -> go.Figure:
     title = "Delta and gamma across strikes — ~30-DTE expiry, each at its own market IV"
     if curves.empty:
         return _empty_figure(title, "No converged quotes for the ~30-DTE expiry")
-    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.12,
+    fig = _subplots(rows=1, cols=2, horizontal_spacing=0.12,
                         subplot_titles=("Delta vs strike", "Gamma vs strike"))
-    colors = {"call": "#4c72b0", "put": "#dd8452"}
+    colors = {"call": theme.SERIES_INK, "put": theme.SERIES_CONTRAST}
     for kind, g in curves.groupby("kind"):
         g = g.sort_values("strike")
         for col, y in ((1, "delta"), (2, "gamma")):
@@ -108,7 +119,7 @@ def build_greeks_curves_figure(curves: pd.DataFrame, spot: float) -> go.Figure:
                 hovertemplate="K %{x:.0f}: %{y:.4f}<extra>" + kind + "</extra>"),
                 row=1, col=col)
     for col in (1, 2):
-        fig.add_vline(x=spot, line=dict(dash="dot", color="grey", width=1), row=1, col=col)
+        fig.add_vline(x=spot, line=dict(dash="dot", color=theme.REFERENCE, width=1), row=1, col=col)
     fig.update_layout(title=title, meta=dict(stack_narrow=True), **_LAYOUT)
     fig.update_xaxes(title_text="Strike")
     return fig
@@ -167,7 +178,7 @@ def _band_trace(plotted: pd.DataFrame, run: list[int]) -> go.Scatter:
     rv_trailing = plotted["rv_trailing"].iloc[run].tolist()
     return go.Scatter(
         x=list(dates) + list(dates[::-1]), y=list(iv) + list(rv_trailing[::-1]),
-        fill="toself", fillcolor="rgba(76,114,176,0.12)", line=dict(width=0),
+        fill="toself", fillcolor="rgba(26,26,24,0.07)", line=dict(width=0),
         hoverinfo="skip", showlegend=False, name="IV − RV band")
 
 
@@ -177,37 +188,50 @@ def build_iv_rv_figure(series: pd.DataFrame, summary: dict, cfg: dict) -> go.Fig
     if series.empty:
         return _empty_figure(title, "No sessions with a 30-DTE ATM implied vol yet")
     plotted = _break_gaps(series)
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # The mean spread is a DERIVED quantity an order of magnitude smaller than
+    # the levels above it (tenths of a vol point against 10-18%). It used to
+    # share this frame on a second y-axis, which let its line cross the implied
+    # and realized lines at points that meant nothing -- the reader cannot see
+    # that a crossing on a dual-axis chart is an artefact of two scales. It gets
+    # its own strip instead, sharing the x-axis so dates still line up.
+    fig = _subplots(rows=2, cols=1, shared_xaxes=True,
+                    row_heights=[0.74, 0.26], vertical_spacing=0.06)
     for band in _iv_rv_band_traces(plotted):
-        fig.add_trace(band)
+        fig.add_trace(band, row=1, col=1)
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["rv_trailing"], mode="lines+markers",
-        name=f"Realized, trailing {rv_cfg['windows'][0]}d", line=dict(color="#55a868"),
-        marker=dict(size=4), hovertemplate="%{x}: %{y:.1%}<extra>trailing RV</extra>"))
+        name=f"Realized, trailing {rv_cfg['windows'][0]}d", line=dict(color=theme.SERIES_CONTRAST),
+        marker=dict(size=4), hovertemplate="%{x}: %{y:.1%}<extra>trailing RV</extra>"),
+        row=1, col=1)
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["atm_iv"], mode="lines+markers",
-        name="Implied, ~30-DTE ATM", line=dict(color="#4c72b0"), marker=dict(size=4),
-        hovertemplate="%{x}: %{y:.1%}<extra>implied</extra>"))
+        name="Implied, ~30-DTE ATM", line=dict(color=theme.SERIES_INK), marker=dict(size=4),
+        hovertemplate="%{x}: %{y:.1%}<extra>implied</extra>"), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["fwd_rv"], mode="lines+markers",
         name=f"Realized, forward {rv_cfg['forward_horizon_days']}d (at quote date)",
-        line=dict(color="#dd8452", dash="dash"), marker=dict(size=4), connectgaps=False,
-        hovertemplate="%{x}: %{y:.1%}<extra>forward RV</extra>"))
+        line=dict(color=theme.SERIES_CONTRAST, dash="dash"), marker=dict(size=4), connectgaps=False,
+        hovertemplate="%{x}: %{y:.1%}<extra>forward RV</extra>"), row=1, col=1)
+    # Alone in its own titled strip, so a legend entry would only repeat the
+    # axis title.
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["spread_running_mean"], mode="lines",
-        name="Mean spread (IV − RV)", line=dict(color="grey", dash="dot"),
-        hovertemplate="%{x}: %{y:+.1%}<extra>mean spread</extra>"), secondary_y=True)
+        name="Mean spread (IV − RV)", showlegend=False,
+        line=dict(color=theme.SERIES_INK, dash="dot"),
+        hovertemplate="%{x}: %{y:+.1%}<extra>mean spread</extra>"), row=2, col=1)
+    fig.add_hline(y=0, line=dict(color=theme.REFERENCE, width=1), row=2, col=1)
     since = summary["history_since"].isoformat() if summary["history_since"] else "n/a"
     fig.add_annotation(text=f"accumulating since {since} · {summary['n_sessions']} sessions",
                        xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
-                       font=dict(size=11, color="#555"), xanchor="left")
+                       font=dict(size=11, color=theme.TEXT_SECONDARY), xanchor="left")
     fig.update_layout(title=title, **_LAYOUT)
-    # This panel's four legend entries wrap onto two rows under _LAYOUT's above-plot
-    # legend, overlapping the title; put the legend below the plot instead.
-    fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.22, x=0),
-                      margin=dict(b=110))
-    fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", secondary_y=False)
-    fig.update_yaxes(title_text="Spread", tickformat="+.1%", secondary_y=True, showgrid=False)
+    # Three legend entries still wrap under _LAYOUT's above-plot legend and
+    # overlap the annotation; put the legend below the plot instead.
+    fig.update_layout(height=540,
+                      legend=dict(orientation="h", yanchor="top", y=-0.18, x=0),
+                      margin=dict(b=96))
+    fig.update_yaxes(title_text="Annualized vol", tickformat=".0%", row=1, col=1)
+    fig.update_yaxes(title_text="Mean spread", tickformat="+.1%", row=2, col=1)
     _apply_recent_range(fig, series["date"])
     return fig
 
@@ -235,10 +259,10 @@ def build_skew_figure(metrics: pd.DataFrame, annotations: pd.DataFrame) -> go.Fi
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["skew_25d"] * 100.0, mode="lines+markers",
-        name="25-delta skew (put − call)", line=dict(color="#8172b2"), marker=dict(size=5),
+        name="25-delta skew (put − call)", line=dict(color=theme.SERIES_INK), marker=dict(size=5),
         customdata=plotted["skew_25d_dte"],
         hovertemplate="%{x}: %{y:+.1f} vol pts (%{customdata:.0f}d expiry)<extra></extra>"))
-    fig.add_hline(y=0, line=dict(color="grey", width=1, dash="dot"))
+    fig.add_hline(y=0, line=dict(color=theme.REFERENCE, width=1, dash="dot"))
     by_date = dict(zip(series["date"], series["skew_25d"] * 100.0))
     for _, a in annotations.iterrows():
         if a["date"] in by_date:
@@ -271,7 +295,7 @@ def _muted_heatmap_layers(z_all, z_hot, xcats, y, colorbar_title: str, zmin: flo
     `all_name` names the faint layer, which carries EVERY cell -- the hot ones
     included -- so what it should be called depends on what the caller mutes.
     """
-    common = dict(x=xcats, y=y, colorscale="RdBu", zmid=0, zmin=zmin, zmax=zmax,
+    common = dict(x=xcats, y=y, colorscale=theme.DIVERGING, zmid=0, zmin=zmin, zmax=zmax,
                   hoverongaps=False, hovertemplate=hovertemplate)
     return [
         go.Heatmap(z=z_all, opacity=0.3, showscale=False, name=all_name, **common),
@@ -323,13 +347,13 @@ def build_parity_figure(parity: pd.DataFrame, spot: float) -> go.Figure:
             hot_name="unexplained", all_name="all pairs"):
         fig.add_trace(layer)
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=spot, y1=spot,
-                  line=dict(color="grey", width=1, dash="dot"))
+                  line=dict(color=theme.REFERENCE, width=1, dash="dot"))
     # Both notes sit ABOVE the plot area (paper coords, anchored by their bottom
     # edge), never over the top row of cells or the y-axis labels. They are
     # mutually exclusive: a close-based frame has no tradeable violations to
-    # explain. `_PARITY_LAYOUT` gives them the headroom under the title.
+    # explain. `_PARITY_LAYOUT` gives them the headroom.
     note = dict(xref="paper", yref="paper", x=0.0, y=1.02, showarrow=False,
-                xanchor="left", yanchor="bottom", font=dict(size=11, color="#555"))
+                xanchor="left", yanchor="bottom", font=dict(size=11, color=theme.TEXT_SECONDARY))
     if p["spread"].notna().sum() == 0:
         fig.add_annotation(text="close-based session — spreads unknown, tradeability not assessable",
                            **note)
@@ -350,7 +374,7 @@ def build_model_vs_market_figure(mvm: pd.DataFrame, flat_vol: float) -> go.Figur
     if mvm.empty:
         return _empty_figure(title, "No flat ~30-DTE ATM vol to price the chain with")
     title += f" ({flat_vol:.1%})"
-    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.14,
+    fig = _subplots(rows=1, cols=2, horizontal_spacing=0.14,
                         subplot_titles=("Calls", "Puts"))
     # `deviation_vol` is a FRACTION of vol; a vol point is 1/100 of it. P6 one
     # section above already multiplies by 100 and hovers "+4.0 vol pts", so

@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src.analytics.hedge_sim import MODEL_MARK_SOURCES
+from src.render import theme
 from src.render.base import LAYOUT, empty_figure
 
 _PNL_AXIS = "P&L ($ per share)"
@@ -25,13 +26,13 @@ def build_hedge_pnl_figure(port: pd.DataFrame, daily: pd.DataFrame) -> go.Figure
             g = g.sort_values("date")
             fig.add_trace(go.Scatter(
                 x=g["date"], y=g["pv"], mode="lines", name=f"trade {entry.isoformat()}",
-                line=dict(width=1, color="#b0b7c3"), legendgroup="trades",
+                line=dict(width=1, color=theme.MUTED), legendgroup="trades",
                 showlegend=False, hovertemplate="%{x}<br>trade P&L $%{y:.2f}<extra></extra>"))
     fig.add_trace(go.Scatter(
         x=port["date"], y=port["pnl_cum"], mode="lines", name="Cumulative (all trades)",
-        line=dict(width=2.5, color="#2b6cb0"),
+        line=dict(width=2.5, color=theme.SERIES_INK),
         hovertemplate="%{x}<br>cumulative $%{y:.2f}<extra></extra>"))
-    fig.add_hline(y=0, line=dict(width=1, color="#999", dash="dot"))
+    fig.add_hline(y=0, line=dict(width=1, color=theme.REFERENCE, dash="dot"))
     fig.update_layout(title="Cumulative P&L — all simulated trades", **LAYOUT)
     fig.update_yaxes(title_text=_PNL_AXIS)
     fig.update_xaxes(title_text="Session")
@@ -75,12 +76,12 @@ def build_hedge_histogram_figure(daily: pd.DataFrame) -> go.Figure:
     if len(daily_pnl) < 1:
         return empty
     fig = go.Figure(go.Histogram(x=daily_pnl.to_numpy(dtype=float), nbinsx=25,
-                                 marker=dict(color="#2b6cb0", line=dict(width=0.5, color="white")),
+                                 marker=dict(color=theme.SERIES_INK, line=dict(width=0.5, color=theme.SURFACE)),
                                  name="Daily P&L",
                                  hovertemplate="$%{x}<br>%{y} sessions<extra></extra>"))
     mean = float(daily_pnl.mean())
-    fig.add_vline(x=0, line=dict(width=1, color="#999", dash="dot"))
-    fig.add_vline(x=mean, line=dict(width=2, color="#c05621"),
+    fig.add_vline(x=0, line=dict(width=1, color=theme.REFERENCE, dash="dot"))
+    fig.add_vline(x=mean, line=dict(width=2, color=theme.SERIES_CONTRAST),
                   annotation_text=f"mean ${mean:.2f}", annotation_position="top right")
     fig.update_layout(title="Daily hedged P&L — distribution", showlegend=False, **LAYOUT)
     fig.update_xaxes(title_text=_PNL_AXIS)
@@ -123,8 +124,8 @@ def build_hedge_scatter_figure(trades: pd.DataFrame, fit: dict,
     fig.add_trace(go.Scatter(
         x=x, y=y, mode="markers+text", name="Settled trades",
         text=[d.strftime("%b %Y") for d in settled["entry_date"]],
-        textposition="top center", textfont=dict(size=10, color="#666"),
-        marker=dict(size=11, color="#2b6cb0", line=dict(width=1, color="white")),
+        textposition="top center", textfont=dict(size=10, color=theme.TEXT_SECONDARY),
+        marker=dict(size=11, color=theme.SERIES_INK, line=dict(width=1, color=theme.SURFACE)),
         customdata=np.column_stack([settled["entry_iv"] * 100, settled["lifetime_rv"] * 100]),
         hovertemplate=("%{text}<br>entry IV %{customdata[0]:.1f} vs realized "
                        "%{customdata[1]:.1f} vol pts<br>P&L $%{y:.2f}<extra></extra>")))
@@ -132,15 +133,15 @@ def build_hedge_scatter_figure(trades: pd.DataFrame, fit: dict,
         xs = np.array([x.min(), x.max()])
         fig.add_trace(go.Scatter(
             x=xs, y=fit["slope"] * xs + fit["intercept"], mode="lines",
-            name="Least-squares fit", line=dict(width=2, color="#c05621", dash="dash"),
+            name="Least-squares fit", line=dict(width=2, color=theme.SERIES_CONTRAST, dash="dash"),
             hoverinfo="skip"))
         fig.add_annotation(
             xref="paper", yref="paper", x=0.02, y=0.98, xanchor="left", yanchor="top",
-            showarrow=False, align="left", font=dict(size=12, color="#444"),
+            showarrow=False, align="left", font=dict(size=12, color=theme.TEXT_SECONDARY),
             text=(f"slope ${fit['slope']:.2f} per vol point · R² {fit['r2']:.2f} "
                   f"· {fit['n']} trades"))
-    fig.add_hline(y=0, line=dict(width=1, color="#999", dash="dot"))
-    fig.add_vline(x=0, line=dict(width=1, color="#999", dash="dot"))
+    fig.add_hline(y=0, line=dict(width=1, color=theme.REFERENCE, dash="dot"))
+    fig.add_vline(x=0, line=dict(width=1, color=theme.REFERENCE, dash="dot"))
     fig.update_layout(title=title, **LAYOUT)
     fig.update_xaxes(title_text="Entry IV − realized vol over the trade's life (vol points)")
     fig.update_yaxes(title_text=_PNL_AXIS)
