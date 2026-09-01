@@ -182,6 +182,30 @@ class TestIvRvFigure:
         assert any(t.fill == "toself" for t in fig.data)
         assert any("2026-08-20" in (a.text or "") for a in fig.layout.annotations)
 
+    def test_mean_spread_has_its_own_strip_not_a_second_y_axis(self):
+        # A dual-axis chart lets two scales cross at points that mean nothing,
+        # and the reader cannot see that the crossing is an artefact. The mean
+        # spread is a derived quantity an order of magnitude smaller than the
+        # levels, so it gets a shared-x strip of its own instead.
+        import yaml
+        from src.analytics.iv_rv import iv_rv_summary
+        from src.render.figures import build_iv_rv_figure
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        s = self._series()
+        fig = build_iv_rv_figure(s, iv_rv_summary(s), cfg)
+        assert fig.layout.yaxis2 is not None            # the second row exists
+        assert not fig.layout.yaxis2.overlaying          # ...and does not overlay row 1
+        assert fig.layout.yaxis2.title.text == "Mean spread"
+        assert fig.layout.yaxis.title.text == "Annualized vol"
+        spread = next(t for t in fig.data if "mean spread" in (t.name or "").lower())
+        levels = [t for t in fig.data
+                  if t.name and "mean spread" not in t.name.lower()]
+        assert spread.yaxis == "y2"
+        assert all(t.yaxis in (None, "y") for t in levels)
+        # alone in a titled strip, it needs no legend entry
+        assert spread.showlegend is False
+
     def test_empty_series(self):
         import yaml
         from src.analytics.iv_rv import IV_RV_COLUMNS, iv_rv_summary
@@ -268,8 +292,10 @@ class TestPagePhase4:
         html = render_page(self._figs(), self._status())
         assert "Input-sensitivity panel arrives" not in html
         assert "Implied-vs-realized panel arrives" not in html
-        q1 = html.index("Q1."); q2 = html.index("Q2."); q3 = html.index("Q3.")
-        q4 = html.index("<h2>Q4.")  # plain "Q4." also matches inside P4's verbatim caption text
+        # Sections are anchored by id under the report chrome; the id is unique
+        # where a bare "Q4." also matches inside P4's verbatim caption text.
+        q1 = html.index("id='Q1'"); q2 = html.index("id='Q2'")
+        q3 = html.index("id='Q3'"); q4 = html.index("id='Q4'")
         assert q1 < html.index("Input sensitivity") < q2
         assert q3 < html.index("Implied vs realized") < q4
 
@@ -297,7 +323,8 @@ class TestPagePhase4:
         from src.render.page import CAPTIONS, render_page
         figs = {p: go.Figure() for p in ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P9")}
         html = render_page(figs, self._status())
-        q2, q3, q5 = html.index("<h2>Q2."), html.index("<h2>Q3."), html.index("<h2>Q5.")
+        q2, q3, q5 = (html.index("id='Q2'"), html.index("id='Q3'"),
+                      html.index("id='Q5'"))
         assert q2 < html.index("25-delta skew") < html.index("Model-vs-market") < q3
         assert q5 < html.index("Put-call parity checker")
         assert "arrives in Phase 5" not in html
@@ -499,7 +526,9 @@ class TestParityFigure:
         assert ann.xanchor == "left" and ann.x == 0.0
         # above the top row of cells, not on top of them
         assert ann.y >= 1.02 and ann.yanchor == "bottom"
-        assert fig.layout.margin.t >= 110       # room for it under the title
+        # The panel card's head carries the title now, so this margin is sized
+        # for the note alone rather than for a title plus a note.
+        assert fig.layout.margin.t >= 70
 
     def test_close_based_annotation_also_sits_above_the_plot_area(self):
         from src.render.figures import build_parity_figure
@@ -1408,11 +1437,12 @@ class TestStalenessBanner:
         from src.render.page import render_page
         html = render_page({}, self._status("2026-08-28"), today=dt.date(2026, 9, 8))
         assert "class='stale'" in html
-        assert html.index("class='stale'") < html.index("Q1.")
+        assert html.index("class='stale'") < html.index("id='Q1'")
 
     def test_page_without_today_argument_still_renders(self):
         from src.render.page import render_page
-        assert "<h1>vol-lens</h1>" in render_page({}, self._status())
+        assert "<h1 class='mh-title'>vol<em>lens</em></h1>" in \
+            render_page({}, self._status())
 
 
 class TestNarrowScreenFigures:
@@ -1489,3 +1519,156 @@ class TestNarrowScreenFigures:
         assert "min-width" in html
         assert "<script src=" not in own_markup
         assert "cdn." not in own_markup
+
+
+class TestReportChrome:
+    """The OpenLia Report design system's chrome, and what it must not break."""
+
+    def _html(self, **kw):
+        figs = {"P2": build_smile_figure(smile_frame(), SPOT),
+                "P3": build_term_structure_figure(term_frame(), None)}
+        return render_page(figs, fake_status(), **kw)
+
+    def test_fonts_are_embedded_not_linked(self):
+        # SPEC 2.5 makes the page self-contained. The design system's families
+        # come from data URIs; a stylesheet <link> or an @import would put a
+        # font CDN back in the render path.
+        from src.render.page import _BUNDLE
+        html = self._html()
+        own_markup = html.replace(_BUNDLE.read_text(), "")
+        assert "<link" not in own_markup
+        assert "@import" not in own_markup
+        assert "fonts.googleapis.com" not in own_markup
+        assert "fonts.gstatic.com" not in own_markup
+        for family in ("Geist", "IBM Plex Mono"):
+            assert f"font-family:'{family}'" in own_markup
+        assert own_markup.count("url(data:font/woff2;base64,") == 4
+
+    def test_page_stays_inside_the_spec_size_budget(self):
+        # The four inlined faces cost ~78 KB on top of the plotly bundle.
+        assert len(self._html().encode()) < 5_000_000       # SPEC 2.5 budget
+
+    def test_every_contents_link_resolves_to_a_section(self):
+        from src.render.page import QUESTIONS
+        html = self._html()
+        for qid, _question, _panels, _coming in QUESTIONS:
+            assert f"href='#{qid}'" in html
+            assert f"<section id='{qid}'>" in html
+
+    def test_contents_counts_only_the_panels_actually_rendered(self):
+        # Q2 owns P2, P3, P6 and P9; this page carries the first two, and every
+        # other question none. The count is per-page, not per-question-size.
+        html = self._html()
+        assert "<span class='toc-count'>2 panels</span>" in html
+        assert html.count("<span class='toc-count'>0 panels</span>") == 4
+        # and it singularises
+        one = render_page({"P2": build_smile_figure(smile_frame(), SPOT)},
+                          fake_status())
+        assert "<span class='toc-count'>1 panel</span>" in one
+
+    def test_metric_strip_carries_every_status_field(self):
+        html = self._html()
+        for label in ("Spot", "Session", "Chain source", "IV convergence",
+                      "Contracts stored"):
+            assert f"<span class='ms-label'>{label}</span>" in html
+        for value in ("770.00", "2026-08-28", "yfinance", "98.5%", "400"):
+            assert f"<span class='ms-value'>{value}</span>" in html
+
+    def test_panel_head_names_the_panel_and_the_figure_title_moves_below_it(self):
+        from src.render.page import _PANEL_TITLES
+        html = self._html()
+        assert f"<strong>P2</strong> · {_PANEL_TITLES['P2']}" in html
+        # The figure's own title is the card's subtitle, not a plot annotation:
+        # for P7 it is the only place the page says which parity variant ran.
+        assert ("<p class='panel-sub'>Implied volatility smile — solved from "
+                "market quotes</p>") in html
+
+    def test_rendering_leaves_the_caller_figure_title_intact(self):
+        # The title is suppressed only for the embedded copy; a figure handed to
+        # render_page must come back out unchanged.
+        fig = build_smile_figure(smile_frame(), SPOT)
+        before = fig.layout.title.text
+        render_page({"P2": fig}, fake_status())
+        assert fig.layout.title.text == before
+
+    def test_no_colour_is_hardcoded_in_the_render_layer(self):
+        # theme.py is the single source of truth; a stray hex in a figure module
+        # is how a design system rots.
+        import pathlib
+        import re
+        for name in ("figures.py", "hedge_figures.py", "page.py", "tiles.py"):
+            src = pathlib.Path("src/render") / name
+            hits = re.findall(r'"#[0-9a-fA-F]{3,8}"', src.read_text())
+            assert not hits, f"{name} hardcodes {hits}"
+
+
+class TestThemePalette:
+    """The measured claims in theme.PALETTE_NOTES, as executable checks."""
+
+    def test_sequence_is_monotone_in_lightness(self):
+        from src.render import theme
+
+        def luminance(hex_colour):
+            channels = []
+            for i in (1, 3, 5):
+                c = int(hex_colour[i:i + 2], 16) / 255
+                channels.append(c / 12.92 if c <= 0.04045
+                                else ((c + 0.055) / 1.055) ** 2.4)
+            r, g, b = channels
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        lums = [luminance(c) for c in theme.SEQUENCE]
+        assert lums == sorted(lums), "the expiry ramp must read as a ladder"
+        paper = luminance(theme.SURFACE)
+        for colour, lum in zip(theme.SEQUENCE, lums):
+            contrast = (paper + 0.05) / (lum + 0.05)
+            assert contrast >= 3.0, f"{colour} is {contrast:.2f}:1 on the plot surface"
+
+    def test_acid_is_never_used_as_a_line_colour(self):
+        # ACID is 1.05:1 on paper -- a fill and a highlight, never a stroke.
+        from src.render import theme
+        assert theme.ACID not in (
+            theme.SERIES_INK, theme.SERIES_CONTRAST, theme.SERIES_ALT,
+            theme.REFERENCE, theme.MUTED)
+        assert theme.ACID not in theme.SEQUENCE
+
+    def test_diverging_scale_spans_zero_with_a_neutral_midpoint(self):
+        from src.render import theme
+        stops = dict((round(pos, 2), colour) for pos, colour in theme.DIVERGING)
+        assert stops[0.5] == theme.PAPER, "a hue at the midpoint reads as a value"
+        assert min(stops) == 0.0 and max(stops) == 1.0
+
+    def test_ramp_spreads_across_the_whole_range_for_short_chains(self):
+        # Three expiries must not get the three darkest steps -- that is the bug
+        # a naive SEQUENCE[:n] slice produces, and it is invisible in a palette
+        # listing but obvious on the chart.
+        from src.render import theme
+        three = theme.ramp(3)
+        assert three[0] == theme.SEQUENCE[0]
+        assert three[-1] == theme.SEQUENCE[-1]
+        assert theme.ramp(len(theme.SEQUENCE)) == theme.SEQUENCE
+        assert theme.ramp(1) == [theme.SEQUENCE[0]]
+        assert theme.ramp(0) == []
+        # a chain longer than the ramp interpolates rather than repeating
+        assert len(set(theme.ramp(9))) == 9
+
+    def test_todays_term_structure_leads_whether_or_not_an_overlay_precedes_it(self):
+        # Plotly assigns colourway slots by trace index, so a muted overlay added
+        # first would otherwise push "today" onto the second slot.
+        from src.render import theme
+        for previous in (None, term_frame(shift=0.01)):
+            fig = build_term_structure_figure(term_frame(), previous)
+            today = [t for t in fig.data if t.name == "today"][0]
+            assert today.line.color == theme.SERIES_INK
+
+    def test_no_caption_names_a_colour_the_palette_no_longer_uses(self):
+        # A caption outlives the colour it describes: P8a called the cumulative
+        # line blue for as long as it was blue, and kept calling it that after
+        # the redesign made it ink. The series palette is ink, burnt, olive and
+        # grey, so none of these words can be true of a line on this page.
+        from src.render.page import CAPTIONS
+        for pid, caption in CAPTIONS.items():
+            lowered = caption.lower()
+            for word in ("blue", "purple", "green line", "orange line",
+                         "red line"):
+                assert word not in lowered, f"{pid}'s caption names {word!r}"

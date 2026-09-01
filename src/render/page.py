@@ -1,8 +1,14 @@
 """Assemble the one static dashboard page (SPEC 2.5).
 
-Self-contained: the vendored plotly.js bundle is inlined; no external
-requests at view time. Captions are part of the deliverable -- they carry
-the interview-prep story (SPEC 2.5) -- keep them verbatim.
+Self-contained: the vendored plotly.js bundle and the two font families are
+inlined; no external request at view time. Captions are part of the
+deliverable -- they carry the interview-prep story (SPEC 2.5) -- keep them
+verbatim.
+
+The page wears the OpenLia Report design system. Its chrome is a masthead, a
+metric strip, a contents grid and one card per panel; the tokens and the
+stylesheet live in `src.render.theme` and `src.render.styles`, and no colour
+is written here.
 """
 import datetime as dt
 import math
@@ -10,7 +16,7 @@ from pathlib import Path
 
 import plotly.io as pio
 
-from src.render.tiles import TILES_CSS
+from src.render.styles import page_css
 
 _BUNDLE = Path(__file__).parent / "assets" / "plotly-cartesian-2.35.2.min.js"
 
@@ -123,7 +129,7 @@ CAPTIONS = {
         "on both legs — and those are the only ones held against a trade when "
         "deciding whether it is quoted well enough to earn a dot on the next "
         "panel. Where either kind occurs, the stat line above gives its count. "
-        "The thin grey lines are the individual trades; the blue line is their sum."
+        "The thin grey lines are the individual trades; the black line is their sum."
     ),
     "P8b": (
         "The money chart. Each dot is one round trip: what the straddle was sold "
@@ -199,26 +205,6 @@ _PANEL_TITLES = {
     "P9": "Model-vs-market price heatmap",
 }
 
-_CSS = """
-body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
-       max-width: 960px; margin: 0 auto; padding: 0 16px 48px; color: #1a1a2e; }
-h1 { margin-top: 28px; } h2 { margin-top: 40px; border-bottom: 2px solid #eee;
-     padding-bottom: 6px; } .meta, .caption, .placeholder, footer
-     { color: #555; font-size: 0.92rem; } .caption { margin: 4px 0 24px; }
-.placeholder { font-style: italic; } footer { margin-top: 48px;
-     border-top: 1px solid #eee; padding-top: 12px; }
-.figure { width: 100%; overflow-x: auto; }
-""" + TILES_CSS + ".stat { font-weight: 600; margin: 4px 0 8px; }\n" + (
-    ".stale { background: #fff5f5; border: 1px solid #f0c0c0; border-radius: 6px;\n"
-    "         padding: 10px 12px; margin: 12px 0; color: #8a2b2b; font-size: 0.92rem; }\n"
-) + (
-    "@media (max-width: 700px) {\n"
-    "  /* Two-column subplot figures compress to ~170px per panel on a phone, which\n"
-    "     is not a chart. Hold them at a readable width and let .figure scroll. */\n"
-    "  .figure-wide > div { min-width: 660px; }\n"
-    "}\n"
-)
-
 # Calendar days since the snapshot before the page admits it may be stale. Four
 # clears a Friday-session page read on the following Tuesday; anything longer
 # means a scheduled run has actually been missed. This is a DISPLAY threshold and
@@ -246,6 +232,71 @@ def staleness_banner(status: dict, today: dt.date | None = None) -> str:
             "that session's, not today's.</p>")
 
 
+def _panel_html(pid: str, figure, extra: str) -> str:
+    """One panel, as a design-system card.
+
+    The figure's own title moves out of the plot and into the card: the head
+    carries the stable panel name, and the figure's title -- which for P7 says
+    which parity variant actually ran -- becomes the card's subtitle. Suppressing
+    it inside the figure is what buys the plot its top margin back.
+    """
+    title = getattr(figure.layout.title, "text", None)
+    figure.layout.title = None
+    try:
+        plot = pio.to_html(figure, full_html=False, include_plotlyjs=False,
+                           config={"responsive": True, "displaylogo": False})
+    finally:
+        figure.layout.title = title
+    wide = " figure-wide" if (figure.layout.meta or {}).get("stack_narrow") else ""
+    sub = f"<p class='panel-sub'>{title}</p>" if title else ""
+    return (
+        "<div class='panel'>"
+        f"<div class='panel-head'><span class='panel-id'><strong>{pid}</strong>"
+        f" · {_PANEL_TITLES[pid]}</span></div>"
+        f"<div class='panel-body'>{sub}{extra}"
+        f"<div class='figure{wide}'>{plot}</div>"
+        f"<p class='caption'>{CAPTIONS[pid]}</p>"
+        "</div></div>")
+
+
+def _masthead(status: dict) -> str:
+    return (
+        "<header class='masthead'><div>"
+        "<div class='eyebrow'>Daily options report · "
+        "<span class='accent'>SPY</span></div>"
+        "<h1 class='mh-title'>vol<em>lens</em></h1>"
+        "<p class='mh-sub'>A daily reality-check of the Black-Scholes model "
+        "against the live US options market.</p></div>"
+        f"<span class='pill on'>Session {status['snapshot_date']}</span>"
+        "</header>")
+
+
+def _metric_strip(status: dict) -> str:
+    cells = [
+        ("Spot", f"{status['spot']:.2f}"),
+        ("Session", status["snapshot_date"]),
+        ("Chain source", status["source"]),
+        ("IV convergence", _fmt_pct(status.get("iv_convergence"))),
+        ("Contracts stored", f"{status['rows_stored']:,}"),
+    ]
+    return "<div class='metric-strip'>" + "".join(
+        f"<div class='ms-cell'><span class='ms-label'>{label}</span>"
+        f"<span class='ms-value'>{value}</span></div>"
+        for label, value in cells) + "</div>"
+
+
+def _contents(figures: dict) -> str:
+    """A card per question, linking to its section anchor."""
+    links = []
+    for qid, question, panel_ids, _coming in QUESTIONS:
+        n = sum(1 for pid in panel_ids if pid in figures)
+        links.append(
+            f"<a href='#{qid}'><span class='toc-num'>{qid}</span>"
+            f"<span class='toc-name'>{question}</span>"
+            f"<span class='toc-count'>{n} panel{'' if n == 1 else 's'}</span></a>")
+    return "<nav class='toc'>" + "".join(links) + "</nav>"
+
+
 def render_page(figures: dict, status: dict, extras: dict | None = None,
                  today: dt.date | None = None) -> str:
     bundle = _BUNDLE.read_text()
@@ -253,42 +304,35 @@ def render_page(figures: dict, status: dict, extras: dict | None = None,
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width, initial-scale=1'>",
         "<title>vol-lens — Black-Scholes vs the market, daily</title>",
-        f"<style>{_CSS}</style>",
+        f"<style>{page_css()}</style>",
         f"<script>{bundle}</script>",
-        "</head><body>",
-        "<h1>vol-lens</h1>",
+        "</head><body><div class='shell'>",
+        _masthead(status),
         staleness_banner(status, today),
-        "<p class='meta'>A daily reality-check of the Black-Scholes model "
-        "against the live US options market. Underlying: <b>SPY</b> · "
-        f"spot <b>{status['spot']:.2f}</b> · session "
-        f"<b>{status['snapshot_date']}</b> · chain source "
-        f"<b>{status['source']}</b> · IV solver convergence "
-        f"<b>{_fmt_pct(status.get('iv_convergence'))}</b></p>",
+        _metric_strip(status),
+        _contents(figures),
     ]
     for qid, question, panel_ids, coming in QUESTIONS:
-        parts.append(f"<h2>{qid}. {question}</h2>")
-        rendered_any = False
-        for pid in panel_ids:
-            if pid in figures:
-                parts.append(f"<h3>{_PANEL_TITLES[pid]}</h3>")
-                parts.append((extras or {}).get(pid, ""))
-                wide = " figure-wide" if (figures[pid].layout.meta or {}).get("stack_narrow") else ""
-                parts.append(f"<div class='figure{wide}'>")
-                parts.append(pio.to_html(
-                    figures[pid], full_html=False, include_plotlyjs=False,
-                    config={"responsive": True, "displaylogo": False}))
-                parts.append(f"</div><p class='caption'>{CAPTIONS[pid]}</p>")
-                rendered_any = True
-        if not rendered_any:
+        rendered = [pid for pid in panel_ids if pid in figures]
+        parts.append(
+            f"<section id='{qid}'><div class='section-head'>"
+            f"<span class='section-num'>{qid}</span>"
+            f"<h2 class='section-name'>{question}</h2>"
+            f"<span class='section-count'>{len(rendered)} panel"
+            f"{'' if len(rendered) == 1 else 's'}</span></div>")
+        for pid in rendered:
+            parts.append(_panel_html(pid, figures[pid], (extras or {}).get(pid, "")))
+        if not rendered:
             parts.append(f"<p class='placeholder'>{coming}</p>")
+        parts.append("</section>")
     parts.extend([
         "<footer>Educational project — simulated analytics on end-of-day "
         f"data; nothing here is investment advice. Last updated "
-        f"{status['last_success_utc']} · {status['rows_stored']} contracts "
-        "stored · SPY options are American-style, priced here with a "
-        "European model (a measured approximation, discussed in the "
-        "repository). Source code: <a href='https://github.com/TK-Chang239/"
+        f"{status['last_success_utc']} · SPY options are American-style, "
+        "priced here with a European model (a measured approximation, "
+        "discussed in the repository). Source code: "
+        "<a href='https://github.com/TK-Chang239/"
         "BlackScholesVolDashboard'>github.com/TK-Chang239/"
         "BlackScholesVolDashboard</a>.</footer>",
-        "</body></html>"])
+        "</div></body></html>"])
     return "".join(parts)

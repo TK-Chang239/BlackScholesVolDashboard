@@ -1,6 +1,10 @@
 """Greek stat tiles (SPEC 3 P4). This is where SPEC 2.3's display scaling
 lives: theta per DAY (/365), vega per VOL POINT (/100), rho per 1% (/100).
-delta and gamma are shown raw."""
+delta and gamma are shown raw.
+
+Presentation is the design system's big-number card; the classes it uses are
+defined once in `src.render.styles`, not here.
+"""
 import pandas as pd
 
 _GREEKS = [  # (column, label, unit, divisor)
@@ -11,15 +15,6 @@ _GREEKS = [  # (column, label, unit, divisor)
     ("rho", "Rho", "per 1% rate", 100.0),
 ]
 
-TILES_CSS = """
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-         gap: 10px; margin: 8px 0 16px; }
-.tile { border: 1px solid #e5e5ee; border-radius: 8px; padding: 10px 12px; }
-.tile .k { font-size: 0.8rem; color: #555; } .tile .v { font-size: 1.25rem; font-weight: 600; }
-.tile .u, .tile .d { font-size: 0.78rem; color: #777; }
-.tiles-head { margin: 14px 0 4px; font-weight: 600; }
-"""
-
 
 def greek_tiles_html(tiles: pd.DataFrame, tiles_prev: pd.DataFrame | None,
                      prev_label: str) -> str:
@@ -29,7 +24,7 @@ def greek_tiles_html(tiles: pd.DataFrame, tiles_prev: pd.DataFrame | None,
     prev = tiles_prev.set_index("kind") if tiles_prev is not None and len(tiles_prev) else None
     for _, row in tiles.iterrows():
         parts.append(
-            f"<div class='tiles-head'>ATM {row['kind']} · K {row['strike']:.0f} · "
+            f"<div class='tiles-head'>ATM <strong>{row['kind']}</strong> · K {row['strike']:.0f} · "
             f"{row['expiry'].isoformat()} ({int(row['dte'])}d) · IV {row['iv']:.1%}</div>"
             "<div class='tiles'>")
         for col, label, unit, div in _GREEKS:
