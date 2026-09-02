@@ -110,6 +110,25 @@ class TestSensitivityFigure:
         assert {t.xaxis for t in bars} == {"x", "x2"}
         assert "Volatility" in "".join(str(t.y) for t in bars)
 
+    def test_the_widest_outside_label_fits_in_the_right_margin(self):
+        # The +20% spot bar is the biggest mover on the panel -- on the
+        # 2026-08-31 session it read +1222.2% -- and up bars label OUTSIDE the
+        # bar end with cliponaxis=False, i.e. into the right margin. Under the
+        # shared r=20 that label was cut to "+1222", so the single most extreme
+        # number on the chart was the one number a reader could not read.
+        from src.analytics.sensitivity import compute_sensitivity
+        from src.render.figures import build_sensitivity_figure
+        fig = build_sensitivity_figure(
+            compute_sensitivity(770.0, 0.12, 30, 0.04, 0.01, 0.20), 0.20)
+        outside = [t for t in fig.data
+                   if t.type == "bar" and t.textposition == "outside"]
+        assert outside, "no outside-labelled bars left to protect"
+        widest = max(len(f"{v:+.1%}") for t in outside
+                     for v in t.x if v is not None and v == v)
+        # ~7px per character in the mono label face these labels render in
+        assert fig.layout.margin.r >= widest * 7, (
+            f"margin.r={fig.layout.margin.r} cannot hold a {widest}-char label")
+
     def test_nan_input_renders_annotation(self):
         from src.analytics.sensitivity import compute_sensitivity
         from src.render.figures import build_sensitivity_figure
