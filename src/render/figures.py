@@ -14,6 +14,14 @@ from src.render.base import (LAYOUT as _LAYOUT, empty_figure as _empty_figure,
 # whose plot starts right under the card head.
 _PARITY_LAYOUT = {**_LAYOUT, "margin": dict(l=54, r=20, t=76, b=45)}
 
+# P1's up bars label outside the bar end with cliponaxis=False, so the label on
+# the longest bar is drawn into the right margin rather than inside the plot.
+# That bar is the +20% spot bump, whose label runs to eight characters
+# (+1252.1% on a typical session) and would be cut off by the shared r=20.
+# Sized for twelve, since the number is data-dependent and only grows as the
+# option gets further out of the money.
+_TORNADO_LAYOUT = {**_LAYOUT, "margin": dict(l=54, r=84, t=34, b=45)}
+
 
 def build_smile_figure(smile: pd.DataFrame, spot: float) -> go.Figure:
     if smile.empty:
@@ -97,7 +105,8 @@ def build_sensitivity_figure(sens: pd.DataFrame, bump: float) -> go.Figure:
             if insidetextanchor:
                 bar_kwargs["insidetextanchor"] = insidetextanchor
             fig.add_trace(go.Bar(**bar_kwargs), row=1, col=col)
-    fig.update_layout(title=title, barmode="overlay", meta=dict(stack_narrow=True), **_LAYOUT)
+    fig.update_layout(title=title, barmode="overlay", meta=dict(stack_narrow=True),
+                      **_TORNADO_LAYOUT)
     fig.update_xaxes(title_text="Price change", tickformat="+.0%")
     return fig
 
