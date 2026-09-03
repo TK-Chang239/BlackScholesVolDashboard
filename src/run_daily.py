@@ -4,9 +4,10 @@ The ONLY place vendors are composed. Failure policy: any unrecoverable
 error raises, leaving no chain file, docs/index.html, or status.json
 untouched, so the Action exits nonzero and yesterday's dashboard stays live.
 `_check_overwrite_shrink` is part of that same policy: it raises, before any
-write, if a freshly filtered chain would replace an already-stored one with
-far fewer rows (e.g. an off-hours run against a thin book), so a degraded
-chain can never silently overwrite a good one in the archive.
+write, if a freshly filtered chain holds far fewer rows than the archive says
+a session should (e.g. an off-hours run against a thin book), so a degraded
+chain can never enter the archive -- neither by overwriting a good one nor by
+being the first thing ever stored for its session.
 
 That refusal is the one failure `main` does not always report as one. Nothing
 is written either way, but whether it means something is broken depends on
@@ -14,12 +15,14 @@ whether a book existed to fetch -- see `book_should_be_full`.
 """
 import datetime as dt
 import os
+import statistics
 import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import yaml
 
 from src.analytics.annotations import COLUMNS as ANNOTATION_COLUMNS, load_annotations
@@ -64,6 +67,15 @@ CARRY_MIN_DTE = 84       # below this a dollar of forward error is a huge "rate"
 # closed book does.
 MIN_CHAIN_RETENTION = 0.5
 
+# What a first-ever write is measured against, since it has no stored version
+# of itself to compare with. Five sessions is about a trading week: long enough
+# that one odd day cannot drag the median, short enough to track the current
+# expiry cycle rather than last quarter's. Below MIN_RECENT_SESSIONS there is
+# no "normal" to speak of and the guard declines to judge -- otherwise it would
+# refuse the archive's own opening sessions.
+RECENT_SESSIONS = 5
+MIN_RECENT_SESSIONS = 3
+
 MARKET_TZ = ZoneInfo("America/New_York")
 
 # The chain fetch is a LIVE snapshot labelled with the last completed session,
@@ -100,23 +112,66 @@ def book_should_be_full(now_utc: dt.datetime) -> bool:
     return now_et.time() >= BOOK_FULL_FROM_ET
 
 
+def _recent_chain_rows(session_date: dt.date, root: Path) -> list[int]:
+    """Row counts of the most recent stored chains before `session_date`.
+
+    Reads Parquet footers rather than the frames: this runs on every daily
+    run and only the row count is wanted.
+    """
+    chains = Path(root) / "data" / "chains"
+    if not chains.is_dir():
+        return []
+    earlier = []
+    for path in chains.glob("*.parquet"):
+        try:
+            day = dt.date.fromisoformat(path.stem)
+        except ValueError:
+            continue                       # .tmp.parquet and anything hand-dropped
+        if day < session_date:
+            earlier.append((day, path))
+    earlier.sort(reverse=True)
+    return [pq.ParquetFile(p).metadata.num_rows for _, p in earlier[:RECENT_SESSIONS]]
+
+
 def _check_overwrite_shrink(chain: pd.DataFrame, session_date: dt.date, root: Path) -> None:
-    """Refuse to replace a stored chain with a drastically smaller one.
+    """Refuse to store a chain far smaller than the archive says it should be.
 
     Runs in the compute stage, before any write (SPEC 2.1): raising here
     leaves the stored chain, daily_metrics, page and status all untouched, so
-    yesterday's dashboard stays live. Only applies when a chain for
-    `session_date` is already on disk -- a first-ever write for a session has
-    nothing to compare against and must proceed.
+    yesterday's dashboard stays live.
+
+    Two reference points, because a session has a stored version of itself
+    only on a re-run. When one exists it is the comparison. When none does --
+    the case for essentially every scheduled run, which writes its session for
+    the first time -- recent sessions stand in for it. Without that second
+    arm the guard was inert exactly where it was needed: runs 33601964465 and
+    its successor each stored a 29-row chain beside ~1,440-row neighbours and
+    neither was refused.
 
     Raises `ChainRetentionRefusal` rather than a bare `RuntimeError` so `main`
     can decide whether it deserves a non-zero exit; every other caller can go
     on treating it as the `RuntimeError` it still is.
     """
+    new_rows = len(chain)
     if not storage.chain_exists(session_date, root):
+        recent = _recent_chain_rows(session_date, root)
+        if len(recent) < MIN_RECENT_SESSIONS:
+            return
+        typical = int(statistics.median(recent))
+        if new_rows < MIN_CHAIN_RETENTION * typical:
+            raise ChainRetentionRefusal(
+                f"refusing to store a first chain for session "
+                f"{session_date.isoformat()}: the freshly filtered chain has "
+                f"{new_rows} rows against a typical {typical} across the "
+                f"{len(recent)} most recent stored sessions, below the "
+                f"{MIN_CHAIN_RETENTION:.0%} floor. This usually means the "
+                "pipeline ran off-hours against a thin book. Nothing has been "
+                "stored, so re-run once the session has closed. If a chain "
+                "this thin is genuinely what you want kept, store it "
+                "deliberately with scripts/backfill.py."
+            )
         return
     stored_rows = len(pd.read_parquet(storage.chain_path(session_date, root)))
-    new_rows = len(chain)
     if new_rows < MIN_CHAIN_RETENTION * stored_rows:
         raise ChainRetentionRefusal(
             f"refusing to overwrite the stored chain for session "

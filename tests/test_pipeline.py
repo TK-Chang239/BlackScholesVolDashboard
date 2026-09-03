@@ -260,6 +260,64 @@ class TestOverwriteShrinkGuard:
         assert (tmp_path / "docs" / "status.json").read_bytes() == status_before
 
 
+class TestThinFirstWriteGuard:
+    """The overwrite guard compares a session only against ITSELF, so it
+    returns early on a first-ever write -- and a scheduled run almost always
+    writes a session for the first time. Runs 33601964465 and its successor
+    published 29-row chains for 2026-09-01 and 2026-09-02 that way, against
+    ~1,440 rows on each neighbouring session, and neither was refused: the
+    guard and the off-hours triage built on it were both inert for the cron,
+    which is the only caller that matters in production.
+
+    A chain far below what recent sessions hold is a defect whether or not
+    that session has been stored before."""
+
+    def _seed_recent(self, tmp_path, n_pairs, count=5):
+        """`count` stored sessions ending two days before TODAY, each holding
+        `n_pairs` call+put pairs. They deliberately sit outside the two dates
+        in `underlying_frame`, so they are visible to the guard without also
+        becoming the run's `prior_dates` term-structure comparison -- this
+        tests the guard, not the previous-session panel."""
+        for i in range(count):
+            storage.write_chain(flat_chain(n_pairs), TODAY - dt.timedelta(days=2 + i), tmp_path)
+
+    def test_fires_when_a_first_write_is_far_below_recent_sessions(self, tmp_path):
+        self._seed_recent(tmp_path, 20)                  # 5 sessions x 40 rows
+        assert not storage.chain_exists(TODAY, tmp_path)  # genuinely a first write
+        with pytest.raises(run_daily.ChainRetentionRefusal):
+            run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+
+    def test_the_refusal_names_the_recent_typical_size_and_the_new_count(self, tmp_path):
+        self._seed_recent(tmp_path, 20)
+        with pytest.raises(run_daily.ChainRetentionRefusal) as excinfo:
+            run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        msg = str(excinfo.value)
+        assert "2026-08-28" in msg                 # names the session
+        assert "40" in msg and "2" in msg          # typical recent size, and this one
+        assert "recent" in msg.lower()             # says what it compared against
+
+    def test_a_first_write_in_line_with_recent_sessions_is_accepted(self, tmp_path):
+        self._seed_recent(tmp_path, 1)                   # 5 sessions x 2 rows
+        status = run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert status["rows_stored"] == 2
+        assert storage.chain_exists(TODAY, tmp_path)
+
+    def test_too_little_history_to_judge_permits_the_write(self, tmp_path):
+        # Below the sample floor there is no "typical" to measure against, and
+        # refusing here would block the archive's own first sessions.
+        self._seed_recent(tmp_path, 20, count=2)
+        status = run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert status["rows_stored"] == 2
+
+    def test_nothing_is_written_when_it_fires(self, tmp_path):
+        self._seed_recent(tmp_path, 20)
+        with pytest.raises(run_daily.ChainRetentionRefusal):
+            run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert not storage.chain_exists(TODAY, tmp_path)
+        assert not (tmp_path / "docs" / "status.json").exists()
+        assert not storage.daily_metrics_path(tmp_path).exists()
+
+
 class TestSessionDateLabeling:
     """snapshot_date must be the market session the underlying describes,
     never wall-clock `today` — matters off-hours and under a cron that runs
