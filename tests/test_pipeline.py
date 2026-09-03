@@ -318,6 +318,72 @@ class TestThinFirstWriteGuard:
         assert not storage.daily_metrics_path(tmp_path).exists()
 
 
+class WideFallback:
+    """Massive standing in for a session the live book could not supply."""
+    called = False
+    def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+        self.called = True
+        return wide_chain(spot, dt.date(2026, 9, 25), 28, source="massive-fallback")
+
+
+class NeverCalledFallback:
+    def get_option_chain(self, *a, **k):
+        raise AssertionError("the fallback must not be reached for a healthy live book")
+
+
+class TestThinLiveBookFallsThroughToMassive:
+    """The cron has been dispatched ~5h late on every observed night, landing
+    near 03:00 ET where no book exists. The retention guard stops that from
+    corrupting the archive, but refusing is all it can do -- the page then
+    stops advancing, which trades a wrong dashboard for a frozen one.
+
+    A thin live book is not a reason to publish nothing. It is a reason to
+    ask the other vendor, exactly as an empty one already does: Massive
+    serves the closed session and the run publishes real rows at any hour."""
+
+    def _seed_recent(self, tmp_path, n_pairs=20, count=5):
+        for i in range(count):
+            storage.write_chain(flat_chain(n_pairs), TODAY - dt.timedelta(days=2 + i), tmp_path)
+
+    def test_a_thin_live_book_falls_through_to_massive(self, tmp_path):
+        self._seed_recent(tmp_path)                  # 5 sessions x 40 rows
+        fallback = WideFallback()
+        status = run(FakeEODHD(), FakeLive(), fallback, real_cfg(), tmp_path, today=TODAY)
+        assert fallback.called, "a 2-row book against a 40-row normal never asked Massive"
+        assert status["source"] == "massive-fallback"
+
+    def test_the_stored_chain_is_the_massive_one_not_the_thin_live_one(self, tmp_path):
+        self._seed_recent(tmp_path)
+        status = run(FakeEODHD(), FakeLive(), WideFallback(), real_cfg(), tmp_path, today=TODAY)
+        stored = pd.read_parquet(storage.chain_path(TODAY, tmp_path))
+        # non-vacuous: the live book carried 2 rows and a "yfinance" source, so
+        # neither assertion can pass on the frame that would have been stored
+        assert (stored["source"] == "massive-fallback").all()
+        assert len(stored) > 2
+        assert status["rows_stored"] == len(stored)
+
+    def test_a_healthy_live_book_never_reaches_the_fallback(self, tmp_path):
+        self._seed_recent(tmp_path)
+        status = run(FakeEODHD(), WideLive(), NeverCalledFallback(), real_cfg(), tmp_path, today=TODAY)
+        assert status["source"] == "yfinance"
+
+    def test_both_sources_thin_still_refuses(self, tmp_path):
+        # what the fallback cannot fix, the guard must still catch
+        self._seed_recent(tmp_path)
+        with pytest.raises(run_daily.ChainRetentionRefusal):
+            run(FakeEODHD(), FakeLive(), FakeFallback(), real_cfg(), tmp_path, today=TODAY)
+
+    def test_too_little_history_publishes_the_thin_live_chain(self, tmp_path):
+        # No "normal" to measure against, so there is nothing to call thin and
+        # no reason to spend a Massive fetch.
+        self._seed_recent(tmp_path, count=2)
+        fallback = WideFallback()
+        status = run(FakeEODHD(), FakeLive(), fallback, real_cfg(), tmp_path, today=TODAY)
+        assert not fallback.called
+        assert status["source"] == "yfinance"
+        assert status["rows_stored"] == 2
+
+
 class TestSessionDateLabeling:
     """snapshot_date must be the market session the underlying describes,
     never wall-clock `today` — matters off-hours and under a cron that runs
