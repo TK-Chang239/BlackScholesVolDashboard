@@ -3,11 +3,13 @@
 The ONLY place vendors are composed. Failure policy: any unrecoverable
 error raises, leaving no chain file, docs/index.html, or status.json
 untouched, so the Action exits nonzero and yesterday's dashboard stays live.
-`_check_overwrite_shrink` is part of that same policy: it raises, before any
-write, if a freshly filtered chain holds far fewer rows than the archive says
-a session should (e.g. an off-hours run against a thin book), so a degraded
-chain can never enter the archive -- neither by overwriting a good one nor by
-being the first thing ever stored for its session.
+A thin live book is handled before that policy applies: if the filtered live
+chain falls far below what recent sessions hold, `run` discards it and fetches
+the session from Massive instead, the same branch an empty frame already takes.
+`_check_overwrite_shrink` then guards what survives -- it raises, before any
+write, if the chain STILL holds far fewer rows than the archive says a session
+should, so a degraded chain can never enter the archive, neither by overwriting
+a good one nor by being the first thing ever stored for its session.
 
 That refusal is the one failure `main` does not always report as one. Nothing
 is written either way, but whether it means something is broken depends on
@@ -133,6 +135,26 @@ def _recent_chain_rows(session_date: dt.date, root: Path) -> list[int]:
     return [pq.ParquetFile(p).metadata.num_rows for _, p in earlier[:RECENT_SESSIONS]]
 
 
+def _thin_against_recent(chain: pd.DataFrame, session_date: dt.date,
+                        root: Path) -> tuple[int, int] | None:
+    """`(typical rows, sessions compared)` when `chain` sits far below what
+    recent sessions hold; `None` when it does not, or when there is too little
+    history to have an opinion.
+
+    One definition of "far below normal", shared by the two callers that need
+    it: `run`, which reaches for the other vendor, and `_check_overwrite_shrink`,
+    which refuses when neither vendor could do better. Two copies of this
+    threshold would drift apart.
+    """
+    recent = _recent_chain_rows(session_date, root)
+    if len(recent) < MIN_RECENT_SESSIONS:
+        return None
+    typical = int(statistics.median(recent))
+    if len(chain) < MIN_CHAIN_RETENTION * typical:
+        return typical, len(recent)
+    return None
+
+
 def _check_overwrite_shrink(chain: pd.DataFrame, session_date: dt.date, root: Path) -> None:
     """Refuse to store a chain far smaller than the archive says it should be.
 
@@ -154,23 +176,21 @@ def _check_overwrite_shrink(chain: pd.DataFrame, session_date: dt.date, root: Pa
     """
     new_rows = len(chain)
     if not storage.chain_exists(session_date, root):
-        recent = _recent_chain_rows(session_date, root)
-        if len(recent) < MIN_RECENT_SESSIONS:
+        thin = _thin_against_recent(chain, session_date, root)
+        if thin is None:
             return
-        typical = int(statistics.median(recent))
-        if new_rows < MIN_CHAIN_RETENTION * typical:
-            raise ChainRetentionRefusal(
-                f"refusing to store a first chain for session "
-                f"{session_date.isoformat()}: the freshly filtered chain has "
-                f"{new_rows} rows against a typical {typical} across the "
-                f"{len(recent)} most recent stored sessions, below the "
-                f"{MIN_CHAIN_RETENTION:.0%} floor. This usually means the "
-                "pipeline ran off-hours against a thin book. Nothing has been "
-                "stored, so re-run once the session has closed. If a chain "
-                "this thin is genuinely what you want kept, store it "
-                "deliberately with scripts/backfill.py."
-            )
-        return
+        typical, sessions = thin
+        raise ChainRetentionRefusal(
+            f"refusing to store a first chain for session "
+            f"{session_date.isoformat()}: the freshly filtered chain has "
+            f"{new_rows} rows against a typical {typical} across the "
+            f"{sessions} most recent stored sessions, below the "
+            f"{MIN_CHAIN_RETENTION:.0%} floor. `run` already tried the Massive "
+            "fallback and it came back no better, so this is not merely a thin "
+            "live book. Nothing has been stored. If a chain this thin is "
+            "genuinely what you want kept, store it deliberately with "
+            "scripts/backfill.py."
+        )
     stored_rows = len(pd.read_parquet(storage.chain_path(session_date, root)))
     if new_rows < MIN_CHAIN_RETENTION * stored_rows:
         raise ChainRetentionRefusal(
@@ -245,6 +265,23 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         source = "yfinance"
     except Exception as live_err:
         print(f"live chain failed ({live_err!r}); falling back to Massive", file=sys.stderr)
+
+    # A thin live book is not a reason to publish nothing, it is a reason to
+    # ask the other vendor -- exactly as an empty one already is. GitHub has
+    # dispatched this cron ~5h late on every observed night, landing near
+    # 03:00 ET where nothing is quoted; without this the guard refuses and the
+    # page simply stops advancing, trading a wrong dashboard for a frozen one.
+    # Massive serves the closed session, so the run publishes real rows at any
+    # hour. Discarding the thin frame here lets the existing branch below do
+    # the fetch.
+    if chain is not None and not chain.empty:
+        thin = _thin_against_recent(chain, session_date, root)
+        if thin:
+            typical, sessions = thin
+            print(f"live filtered chain is thin ({len(chain)} rows against a typical "
+                  f"{typical} across {sessions} recent sessions); falling back to Massive",
+                  file=sys.stderr)
+            chain = None
 
     if chain is None or chain.empty:
         if chain is not None:
