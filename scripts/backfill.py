@@ -1,6 +1,9 @@
 """CLI for the historical backfill. Usage:
-    python scripts/backfill.py [--start YYYY-MM-DD] [--end YYYY-MM-DD]
+    python scripts/backfill.py [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--overwrite]
 Defaults: end = yesterday, start = end - 730 days. Re-run to resume.
+
+--overwrite refetches days already on disk instead of skipping them, for when a
+corrected filter makes stored chains wrong rather than missing.
 """
 import argparse
 import datetime as dt
@@ -22,6 +25,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", type=dt.date.fromisoformat)
     ap.add_argument("--end", type=dt.date.fromisoformat)
+    ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
     end = args.end or dt.date.today() - dt.timedelta(days=1)
     start = args.start or end - dt.timedelta(days=730)
@@ -30,7 +34,7 @@ def main() -> None:
         cfg = yaml.safe_load(f)
     eodhd = EODHDProvider(get_secret("EODHD_API_TOKEN", root / ".env"), cfg)
     massive = MassiveProvider(get_secret("MASSIVE_API_KEY", root / ".env"), cfg)
-    summary = backfill(massive, eodhd, cfg, root, start, end)
+    summary = backfill(massive, eodhd, cfg, root, start, end, overwrite=args.overwrite)
     print(summary)
 
 

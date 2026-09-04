@@ -33,6 +33,59 @@ class TestMonthlyExpiry:
                   dt.date(2026, 9, 17)]:  # a Thursday
             assert not is_monthly_expiry(d), d
 
+    def test_thursday_before_a_closed_third_friday_is_monthly(self):
+        # When the exchange is shut on the third Friday the monthly contract
+        # settles the preceding session, and that Thursday is the only date the
+        # vendor ever lists (verified against Massive's contract reference:
+        # 2026-06-18 and 2025-04-17 are listed, their Fridays are not).
+        for d in [dt.date(2026, 6, 18),   # Juneteenth falls on Friday 2026-06-19
+                  dt.date(2025, 4, 17),   # Good Friday is 2025-04-18
+                  dt.date(2027, 6, 17)]:  # Juneteenth Sat 2027-06-19, observed Fri 06-18
+            assert is_monthly_expiry(d), d
+
+    def test_closed_third_friday_is_not_monthly(self):
+        # Nothing expires on a day the exchange never opens.
+        for d in [dt.date(2026, 6, 19), dt.date(2025, 4, 18), dt.date(2027, 6, 18)]:
+            assert not is_monthly_expiry(d), d
+
+    def test_shift_can_cross_the_fifteenth(self):
+        # Good Friday 2022 IS the third Friday, and it lands on the 15th — so
+        # the monthly settles on the 14th. A rule that keeps a "day 15-21"
+        # window rejects that Thursday and leaves the month with no monthly
+        # expiry at all, which is how the June 2026 hole got into the archive.
+        assert is_monthly_expiry(dt.date(2022, 4, 14))
+        assert not is_monthly_expiry(dt.date(2022, 4, 15))
+
+    def test_every_month_has_exactly_one_monthly_expiry(self):
+        # The ladder is built by filtering a vendor expiry list against this
+        # predicate, so a month with none silently drops out of every panel and
+        # a month with two splices maturities together.
+        for year in range(2015, 2036):
+            for month in range(1, 13):
+                days = []
+                day = dt.date(year, month, 1)
+                while day.month == month:
+                    if is_monthly_expiry(day):
+                        days.append(day)
+                    day += dt.timedelta(days=1)
+                assert len(days) == 1, (year, month, days)
+
+    def test_juneteenth_does_not_shift_expiries_before_the_nyse_observed_it(self):
+        # The NYSE first closed for Juneteenth in 2022. On these two third
+        # Fridays the exchange was open and the monthly settled normally, so a
+        # rule that reads the federal holiday back through history invents a
+        # shift that never happened.
+        assert is_monthly_expiry(dt.date(2021, 6, 18))
+        assert not is_monthly_expiry(dt.date(2021, 6, 17))
+        assert is_monthly_expiry(dt.date(2020, 6, 19))
+
+    def test_thursday_holiday_does_not_move_an_open_third_friday(self):
+        # Juneteenth 2025 falls on Thursday 2025-06-19: the market is shut that
+        # Thursday but open on the third Friday, so the monthly stays put. A fix
+        # keyed on "June 19" rather than on the Friday's own status breaks here.
+        assert is_monthly_expiry(dt.date(2025, 6, 20))
+        assert not is_monthly_expiry(dt.date(2025, 6, 19))
+
 
 class TestSelectExpiries:
     def test_selects_nearest_six_monthlies_within_dte(self):

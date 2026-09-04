@@ -5,6 +5,13 @@ run (rate limit, ctrl-C, crash) just continues on the next invocation.
 Trading days come from EODHD's underlying history -- no exchange-calendar
 dependency needed.
 
+`overwrite=True` refetches days already on disk instead of skipping them.
+Resumability answers "which days are missing"; a corrected filter makes the
+days that are PRESENT wrong, and nothing but a refetch repairs those. The
+stored chain is replaced only once a new one is in hand -- a failed refetch
+leaves the old file untouched and is retried like any other failed day, which
+deleting the range up front could not do.
+
 Error isolation = failed days (fetch/filter/write raises any Exception) are
 logged, counted in "dates_failed", and left absent on disk — the next
 invocation retries exactly those days. KeyboardInterrupt is NOT caught
@@ -18,7 +25,7 @@ from src.data.filters import filter_chain
 
 
 def backfill(massive, eodhd, cfg: dict, root: Path,
-             start: dt.date, end: dt.date, log=print) -> dict:
+             start: dt.date, end: dt.date, log=print, overwrite: bool = False) -> dict:
     symbol = cfg["symbol"]
     underlying = eodhd.get_underlying_history(symbol, start=start - dt.timedelta(days=7))
     storage.upsert_underlying(underlying, root)
@@ -28,7 +35,7 @@ def backfill(massive, eodhd, cfg: dict, root: Path,
     summary = {"dates_total": len(days), "dates_skipped": 0,
                "dates_written": 0, "dates_empty": 0, "dates_failed": 0, "rows_written": 0}
     for day in days:
-        if storage.chain_exists(day, root):
+        if storage.chain_exists(day, root) and not overwrite:
             summary["dates_skipped"] += 1
             continue
         try:

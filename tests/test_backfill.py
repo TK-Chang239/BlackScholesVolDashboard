@@ -33,9 +33,10 @@ class FakeEODHD:
 
 
 class FakeMassive:
-    def __init__(self, empty_on=None):
+    def __init__(self, empty_on=None, strike=700.0):
         self.requested = []
         self.empty_on = empty_on or set()
+        self.strike = strike
 
     def get_historical_chain(self, symbol, snapshot_date, spot, cfg):
         self.requested.append((snapshot_date, spot))
@@ -44,7 +45,7 @@ class FakeMassive:
                                          "close", "volume", "open_interest", "vendor_iv", "source"])
         exp = dt.date(2026, 9, 18)
         return pd.DataFrame({
-            "expiry": [exp], "strike": [700.0], "kind": ["call"],
+            "expiry": [exp], "strike": [self.strike], "kind": ["call"],
             "bid": [np.nan], "ask": [np.nan], "mid": [np.nan],
             "close": [71.0], "volume": [10], "open_interest": [np.nan],
             "vendor_iv": [np.nan], "source": ["massive-backfill"],
@@ -77,6 +78,34 @@ class TestBackfill:
                            start=DATES[0], end=DATES[-1], log=lambda *_: None)
         assert summary["dates_empty"] == 1
         assert not storage.chain_exists(DATES[1], tmp_path)
+
+    def test_overwrite_refetches_and_replaces_existing_files(self, tmp_path):
+        # A filter change (a corrected expiry rule) makes stored chains wrong
+        # rather than absent, and resumability alone can never repair them.
+        backfill(FakeMassive(), FakeEODHD(), cfg(), tmp_path,
+                 start=DATES[0], end=DATES[0], log=lambda *_: None)
+        before = pd.read_parquet(storage.chain_path(DATES[0], tmp_path))
+        m = FakeMassive(strike=705.0)
+        summary = backfill(m, FakeEODHD(), cfg(), tmp_path, start=DATES[0], end=DATES[0],
+                           log=lambda *_: None, overwrite=True)
+        after = pd.read_parquet(storage.chain_path(DATES[0], tmp_path))
+        assert [d for d, _ in m.requested] == [DATES[0]]
+        assert summary["dates_written"] == 1 and summary["dates_skipped"] == 0
+        assert before["strike"].tolist() == [700.0]
+        assert after["strike"].tolist() == [705.0]
+
+    def test_overwrite_keeps_the_stored_chain_when_the_refetch_fails(self, tmp_path):
+        # Deleting the files first and re-running would lose every day the
+        # vendor happens to fail on. The old chain must survive until a new one
+        # is actually in hand.
+        backfill(FakeMassive(), FakeEODHD(), cfg(), tmp_path,
+                 start=DATES[0], end=DATES[0], log=lambda *_: None)
+        summary = backfill(FailingMassive(fail_on={DATES[0]}), FakeEODHD(), cfg(), tmp_path,
+                           start=DATES[0], end=DATES[0], log=lambda *_: None, overwrite=True)
+        assert summary["dates_failed"] == 1 and summary["dates_written"] == 0
+        assert storage.chain_exists(DATES[0], tmp_path)
+        kept = pd.read_parquet(storage.chain_path(DATES[0], tmp_path))
+        assert kept["strike"].tolist() == [700.0]
 
     def test_date_window_respected(self, tmp_path):
         m = FakeMassive()
