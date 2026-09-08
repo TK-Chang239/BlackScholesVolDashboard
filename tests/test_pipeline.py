@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from src.data import storage
-from src.data.base import CHAIN_COLUMNS, UNDERLYING_COLUMNS
+from src.data.base import CHAIN_COLUMNS, LIVE_SOURCES, UNDERLYING_COLUMNS
 from src import run_daily
 from src.run_daily import run
 
@@ -189,15 +189,23 @@ class TestDailyRun:
 def flat_chain(n_pairs, source="yfinance"):
     """A trivial CHAIN_COLUMNS-conforming frame with `n_pairs` call+put strikes,
     written straight to disk to seed a "stored chain already exists" fixture
-    without going through run()/filter_chain."""
+    without going through run()/filter_chain.
+
+    Only a live source carries bid/ask, as in the real archive: the Massive
+    tier this project runs on serves closes and open interest but no quotes.
+    """
     exp = dt.date(2026, 9, 18)
+    quoted = source in LIVE_SOURCES
     rows = []
     for i in range(n_pairs):
         strike = 700.0 + i
         for kind in ("call", "put"):
             rows.append({
                 "expiry": exp, "strike": strike, "kind": kind,
-                "bid": 1.0, "ask": 1.2, "mid": 1.1, "close": 1.1,
+                "bid": 1.0 if quoted else np.nan,
+                "ask": 1.2 if quoted else np.nan,
+                "mid": 1.1 if quoted else np.nan,
+                "close": 1.1,
                 "volume": 10, "open_interest": 10, "vendor_iv": 0.2,
                 "source": source,
             })
@@ -258,6 +266,94 @@ class TestOverwriteShrinkGuard:
         assert storage.daily_metrics_path(tmp_path).read_bytes() == metrics_before
         assert (tmp_path / "docs" / "index.html").read_bytes() == page_before
         assert (tmp_path / "docs" / "status.json").read_bytes() == status_before
+
+
+class TestQuoteBookRetention:
+    """The row-count guard measures size, and size is not information.
+
+    On 2026-09-08 the cron ran at 03:15 ET on a day whose session had not
+    advanced -- Labor Day meant Friday 09-04 was still the latest -- refetched
+    that session, found the live book thin at 3am, fell back to Massive, and
+    replaced a 1,452-row yfinance chain carrying bid/ask on every row with
+    1,503 close-based rows carrying none. 1,503 > 1,452 read as growth, so
+    nothing objected; the file shrank 62KB -> 42KB and P7 went from 154
+    tradeable violations with 10 unexplained to being unable to assess
+    tradeability at all. A session's quotes cannot be refetched once it has
+    passed, so this is the one loss in the pipeline that no later run repairs.
+    """
+
+    def _closing_fallback(self, n_pairs):
+        chain = flat_chain(n_pairs, source="massive-fallback")
+
+        class Fallback:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return chain
+        return Fallback()
+
+    def _quoted_live(self, n_pairs):
+        chain = flat_chain(n_pairs, source="yfinance")
+
+        class Live:
+            def get_option_chain(self, symbol, snapshot_date, spot, cfg):
+                return chain
+        return Live()
+
+    def test_refuses_to_replace_a_quoted_chain_with_a_close_based_one(self, tmp_path):
+        storage.write_chain(flat_chain(20, source="yfinance"), TODAY, tmp_path)
+        live = FakeLive()
+        live.fail = True                       # thin/absent live book, as at 3am
+        with pytest.raises(run_daily.ChainRetentionRefusal):
+            run(FakeEODHD(), live, self._closing_fallback(25), real_cfg(),
+                tmp_path, today=TODAY)
+
+    def test_the_stored_quote_book_survives_the_refusal(self, tmp_path):
+        storage.write_chain(flat_chain(20, source="yfinance"), TODAY, tmp_path)
+        before = storage.chain_path(TODAY, tmp_path).read_bytes()
+        live = FakeLive()
+        live.fail = True
+        with pytest.raises(run_daily.ChainRetentionRefusal):
+            run(FakeEODHD(), live, self._closing_fallback(25), real_cfg(),
+                tmp_path, today=TODAY)
+        assert storage.chain_path(TODAY, tmp_path).read_bytes() == before
+
+    def test_the_refusal_names_the_loss_not_just_the_sizes(self, tmp_path):
+        storage.write_chain(flat_chain(20, source="yfinance"), TODAY, tmp_path)
+        live = FakeLive()
+        live.fail = True
+        with pytest.raises(run_daily.ChainRetentionRefusal) as excinfo:
+            run(FakeEODHD(), live, self._closing_fallback(25), real_cfg(),
+                tmp_path, today=TODAY)
+        msg = str(excinfo.value).lower()
+        assert "2026-08-28" in msg                        # names the session
+        assert "quote" in msg or "bid" in msg             # names WHAT is lost
+        # and must not be mistaken for the size guard, which it deliberately passed
+        assert "50" in msg and "40" in msg
+
+    def test_a_close_based_session_may_be_upgraded_to_a_quoted_one(self, tmp_path):
+        # The improving direction. Refusing here would freeze every backfilled
+        # session at closes forever.
+        storage.write_chain(flat_chain(20, source="massive-backfill"), TODAY, tmp_path)
+        status = run(FakeEODHD(), self._quoted_live(25), FakeFallback(), real_cfg(),
+                     tmp_path, today=TODAY)
+        assert status["rows_stored"] == 50
+        stored = pd.read_parquet(storage.chain_path(TODAY, tmp_path))
+        assert stored["bid"].notna().all()
+
+    def test_a_quoted_chain_may_replace_a_quoted_chain(self, tmp_path):
+        # Same information either side: this guard has no opinion, and the
+        # row-count rule alone governs.
+        storage.write_chain(flat_chain(20, source="yfinance"), TODAY, tmp_path)
+        status = run(FakeEODHD(), self._quoted_live(25), FakeFallback(), real_cfg(),
+                     tmp_path, today=TODAY)
+        assert status["rows_stored"] == 50
+
+    def test_a_close_based_chain_may_replace_a_close_based_one(self, tmp_path):
+        storage.write_chain(flat_chain(20, source="massive-backfill"), TODAY, tmp_path)
+        live = FakeLive()
+        live.fail = True
+        status = run(FakeEODHD(), live, self._closing_fallback(25), real_cfg(),
+                     tmp_path, today=TODAY)
+        assert status["rows_stored"] == 50
 
 
 class TestThinFirstWriteGuard:

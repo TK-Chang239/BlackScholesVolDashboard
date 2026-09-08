@@ -155,6 +155,20 @@ def _thin_against_recent(chain: pd.DataFrame, session_date: dt.date,
     return None
 
 
+def _quote_coverage(chain: pd.DataFrame) -> float:
+    """Share of rows carrying a two-sided quote.
+
+    In practice this is binary rather than graded -- `filter_chain` keeps a
+    live row only when both bid and ask are positive, and the Massive tier
+    serves no quotes at all -- so it reads 1.0 on a live chain and 0.0 on a
+    close-based one. Written as a share anyway so a vendor that someday
+    quotes part of a ladder degrades the reading instead of breaking it.
+    """
+    if chain.empty:
+        return 0.0
+    return float((chain["bid"].notna() & chain["ask"].notna()).mean())
+
+
 def _check_overwrite_shrink(chain: pd.DataFrame, session_date: dt.date, root: Path) -> None:
     """Refuse to store a chain far smaller than the archive says it should be.
 
@@ -191,7 +205,28 @@ def _check_overwrite_shrink(chain: pd.DataFrame, session_date: dt.date, root: Pa
             "genuinely what you want kept, store it deliberately with "
             "scripts/backfill.py."
         )
-    stored_rows = len(pd.read_parquet(storage.chain_path(session_date, root)))
+    stored = pd.read_parquet(storage.chain_path(session_date, root))
+    stored_rows = len(stored)
+    # Size is not information. A close-based chain can be LARGER than the
+    # quoted one it replaces -- Massive's ladder is wider than yfinance's --
+    # so the row test above reads the swap as growth and waves it through,
+    # while bid/ask goes to nothing and P7 loses the only test on this page
+    # that can call an arbitrage tradeable. Quotes are also the one thing a
+    # later run cannot recover: the session has passed.
+    if _quote_coverage(stored) > 0 and _quote_coverage(chain) == 0:
+        raise ChainRetentionRefusal(
+            f"refusing to overwrite the stored chain for session "
+            f"{session_date.isoformat()}: it carries two-sided quotes on "
+            f"{_quote_coverage(stored):.0%} of its {stored_rows} rows and the "
+            f"freshly filtered chain has none on any of its {new_rows}. That "
+            "is a loss of bid/ask, not of size, so the row-count floor does "
+            "not see it -- and a passed session's quotes cannot be fetched "
+            "again. This is the expected outcome when a run refetches a "
+            "session that has not advanced (the morning after a market "
+            "holiday) and finds the live book thin. Nothing has been stored. "
+            "If the close-based chain is genuinely what you want kept, delete "
+            "the stored file first to accept the loss deliberately."
+        )
     if new_rows < MIN_CHAIN_RETENTION * stored_rows:
         raise ChainRetentionRefusal(
             f"refusing to overwrite the stored chain for session "
