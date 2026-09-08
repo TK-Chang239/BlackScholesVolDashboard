@@ -6,8 +6,8 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from src.render import theme
-from src.render.base import (LAYOUT as _LAYOUT, empty_figure as _empty_figure,
-                            subplots as _subplots)
+from src.render.base import (LAYOUT as _LAYOUT, break_unmeasured,
+                            empty_figure as _empty_figure, subplots as _subplots)
 
 # P7 carries a note above the plot area (close-based, or the early-exercise
 # count), so it needs more headroom above the top row of cells than a panel
@@ -264,7 +264,10 @@ def build_skew_figure(metrics: pd.DataFrame, annotations: pd.DataFrame) -> go.Fi
     if series.empty:
         return _empty_figure(title, "No session with a bracketed 25-delta skew yet",
                              yaxis_title="Vol points")
-    plotted = _break_gaps(series)
+    # `metrics` carries a row per stored session, including the ones this panel
+    # has no value for, so it is its own session calendar -- no threshold to
+    # tune, and a long weekend is told from a real hole by construction.
+    plotted = break_unmeasured(series, metrics["date"])
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=plotted["date"], y=plotted["skew_25d"] * 100.0, mode="lines+markers",

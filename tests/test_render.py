@@ -438,6 +438,123 @@ class TestSkewFigure:
         fig = build_skew_figure(m, pd.DataFrame(columns=["date", "note"]))
         assert not fig.data and fig.layout.annotations
 
+    def test_structural_hole_breaks_the_line(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        # Sessions 2 and 3 are stored but carry no skew -- no expiry sat in the
+        # 20-40 DTE band. Spanning them draws a path through days nobody
+        # measured, between two DIFFERENT expiries: the left point is a decaying
+        # ~21-day contract, the right one a fresh ~39-day contract.
+        d = [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(4)]
+        m = self._metrics(d, [0.030, float("nan"), float("nan"), 0.046])
+        m["skew_25d_dte"] = [21.0, float("nan"), float("nan"), 39.0]
+        fig = build_skew_figure(m, pd.DataFrame(columns=["date", "note"]))
+        trace = [t for t in fig.data if "skew" in (t.name or "").lower()][0]
+        assert any(v is None or v != v for v in trace.y)
+
+    def test_market_closure_does_not_break_the_line(self):
+        import datetime as dt
+        from src.render.figures import build_skew_figure
+        # Friday to Tuesday over Memorial Day: no session is stored in between,
+        # so these two points ARE consecutive sessions and the line is whole.
+        d = [dt.date(2026, 5, 21), dt.date(2026, 5, 22), dt.date(2026, 5, 26)]
+        fig = build_skew_figure(self._metrics(d, [0.041, 0.042, 0.039]),
+                                pd.DataFrame(columns=["date", "note"]))
+        trace = [t for t in fig.data if "skew" in (t.name or "").lower()][0]
+        assert not any(v is None or v != v for v in trace.y)
+
+
+class TestBreakUnmeasured:
+    """For a PER-SESSION metric: a stored session with no value is ignorance,
+    and the line may not span it."""
+
+    def _series(self, dates, values):
+        return pd.DataFrame({"date": dates, "v": values})
+
+    def test_breaks_where_a_stored_session_carries_no_value(self):
+        import datetime as dt
+        from src.render.base import break_unmeasured
+        plotted = [dt.date(2026, 6, 1), dt.date(2026, 6, 4)]
+        sessions = [dt.date(2026, 6, 1), dt.date(2026, 6, 2),
+                    dt.date(2026, 6, 3), dt.date(2026, 6, 4)]
+        out = break_unmeasured(self._series(plotted, [1.0, 2.0]), sessions)
+        assert len(out) == 3
+        assert out["v"].isna().sum() == 1
+
+    def test_no_break_across_a_market_closure(self):
+        import datetime as dt
+        from src.render.base import break_unmeasured
+        # Friday to Tuesday over a holiday Monday: four calendar days, but no
+        # session sits between them, so they ARE consecutive observations. A
+        # day-count threshold cannot tell this from a real hole.
+        plotted = [dt.date(2026, 5, 22), dt.date(2026, 5, 26)]
+        out = break_unmeasured(self._series(plotted, [1.0, 2.0]), plotted)
+        assert len(out) == 2
+        assert not out["v"].isna().any()
+
+    def test_series_shorter_than_two_points_is_returned_unchanged(self):
+        import datetime as dt
+        from src.render.base import break_unmeasured
+        s = self._series([dt.date(2026, 6, 1)], [1.0])
+        assert break_unmeasured(s, [dt.date(2026, 6, 1)]).equals(s)
+
+    def test_no_session_calendar_means_no_breaks(self):
+        import datetime as dt
+        from src.render.base import break_unmeasured
+        s = self._series([dt.date(2024, 6, 1), dt.date(2026, 6, 1)], [1.0, 2.0])
+        assert break_unmeasured(s, None).equals(s)
+
+
+class TestBreakArchiveGaps:
+    """For a CUMULATIVE series: a session with no row means no position was
+    open, which is known to be flat. Only a hole in the session calendar
+    itself -- a stretch the archive never covered -- is ignorance."""
+
+    def _series(self, dates, values):
+        return pd.DataFrame({"date": dates, "v": values})
+
+    def test_breaks_where_the_session_calendar_has_a_hole(self):
+        import datetime as dt
+        from src.render.base import break_archive_gaps
+        plotted = [dt.date(2024, 9, 4), dt.date(2026, 4, 1)]
+        out = break_archive_gaps(self._series(plotted, [2.26, 2.26]), plotted)
+        assert len(out) == 3
+        assert out["v"].isna().sum() == 1
+
+    def test_does_not_break_where_sessions_are_continuous(self):
+        import datetime as dt
+        from src.render.base import break_archive_gaps
+        # No rows for the middle sessions -- no position was open -- but the
+        # archive covers them, so the flat stretch is measured, not assumed.
+        plotted = [dt.date(2026, 6, 1), dt.date(2026, 6, 5)]
+        sessions = [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(5)]
+        out = break_archive_gaps(self._series(plotted, [2.0, 3.0]), sessions)
+        assert len(out) == 2
+        assert not out["v"].isna().any()
+
+    def test_does_not_break_across_a_long_weekend(self):
+        import datetime as dt
+        from src.render.base import break_archive_gaps
+        plotted = [dt.date(2026, 5, 22), dt.date(2026, 5, 26)]
+        out = break_archive_gaps(self._series(plotted, [1.0, 2.0]), plotted)
+        assert len(out) == 2
+        assert not out["v"].isna().any()
+
+    def test_breaks_when_no_session_lies_between_the_points_at_all(self):
+        import datetime as dt
+        from src.render.base import break_archive_gaps
+        # The plotted points need not themselves be in the calendar: the hedge
+        # P&L runs on underlying closes, so a trade's last day can be a session
+        # no chain was stored for. Measuring only the sessions strictly inside
+        # the span finds a single one here and no consecutive pair to compare,
+        # so the emptiest possible window -- 18 months with nothing in it --
+        # would read as continuous.
+        plotted = [dt.date(2024, 9, 20), dt.date(2026, 4, 1)]
+        sessions = [dt.date(2024, 9, 3), dt.date(2026, 4, 1)]
+        out = break_archive_gaps(self._series(plotted, [2.26, 2.26]), sessions)
+        assert len(out) == 3
+        assert out["v"].isna().sum() == 1
+
 
 class TestParityFigure:
     def _parity(self, quoted=True, cells=None):
@@ -869,6 +986,39 @@ class TestHedgeFigures:
             pd.DataFrame())
         assert len(fig.data) == 0
         assert fig.layout.annotations[0].text
+
+    def test_archive_gap_breaks_the_cumulative_line(self):
+        import datetime as dt
+        from src.render.hedge_figures import build_hedge_pnl_figure
+        # A probe session long before the daily archive starts. Spanning it
+        # claims the strategy sat flat for the whole stretch, when the truth is
+        # the simulation had no data there at all -- and the trades that would
+        # have run in between are exactly what this panel is about.
+        port = pd.DataFrame({
+            "date": [dt.date(2024, 9, 3), dt.date(2024, 9, 4),
+                     dt.date(2026, 4, 1), dt.date(2026, 4, 2)],
+            "pnl_day": [0.0, 2.26, 0.0, 1.5],
+            "pnl_cum": [0.0, 2.26, 2.26, 3.76],
+            "n_open": [1, 1, 1, 1],
+        })
+        fig = build_hedge_pnl_figure(port, pd.DataFrame(), sessions=port["date"])
+        cum = [t for t in fig.data if "cumulative" in (t.name or "").lower()][0]
+        assert any(v is None or v != v for v in cum.y)
+
+    def test_flat_stretch_between_trades_is_not_broken(self):
+        import datetime as dt
+        from src.render.hedge_figures import build_hedge_pnl_figure
+        # No position was open here, but the archive HAS these sessions, so the
+        # P&L is known to have been flat rather than unobserved. Breaking it
+        # would claim ignorance the data does not support.
+        port = pd.DataFrame({
+            "date": [dt.date(2026, 6, 1), dt.date(2026, 6, 5)],
+            "pnl_day": [0.0, 1.0], "pnl_cum": [2.0, 3.0], "n_open": [1, 1],
+        })
+        sessions = [dt.date(2026, 6, 1) + dt.timedelta(days=i) for i in range(5)]
+        fig = build_hedge_pnl_figure(port, pd.DataFrame(), sessions=sessions)
+        cum = [t for t in fig.data if "cumulative" in (t.name or "").lower()][0]
+        assert not any(v is None or v != v for v in cum.y)
 
     def test_pnl_figure_overlays_one_line_per_overlapping_trade(self):
         from src.render.hedge_figures import build_hedge_pnl_figure

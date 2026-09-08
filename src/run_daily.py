@@ -392,7 +392,11 @@ def run(eodhd, live, fallback, cfg: dict, root: Path, today: dt.date | None = No
         "P5": build_iv_rv_figure(series, summary, cfg),
         "P6": build_skew_figure(metrics, annotations),
         "P7": build_parity_figure(parity, spot),
-        "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["daily"]),
+        # metrics holds a row per stored chain session, which is exactly the
+        # archive the hedge replay ran over -- so it is the calendar that says
+        # which flat stretches were observed and which were never covered.
+        "P8a": build_hedge_pnl_figure(hedge["portfolio"], hedge["daily"],
+                                      sessions=metrics["date"]),
         "P8b": build_hedge_scatter_figure(hedge["trades"], hedge["fit"],
                                           next_settlement=hsum["next_settlement"]),
         "P8c": build_hedge_histogram_figure(hedge["daily"]),

@@ -9,17 +9,27 @@ import plotly.graph_objects as go
 
 from src.analytics.hedge_sim import MODEL_MARK_SOURCES
 from src.render import theme
-from src.render.base import LAYOUT, empty_figure
+from src.render.base import LAYOUT, break_archive_gaps, empty_figure
 
 _PNL_AXIS = "P&L ($ per share)"
 
 
-def build_hedge_pnl_figure(port: pd.DataFrame, daily: pd.DataFrame) -> go.Figure:
-    """Portfolio cumulative P&L, with each trade's own running P&L behind it."""
+def build_hedge_pnl_figure(port: pd.DataFrame, daily: pd.DataFrame,
+                           sessions=None) -> go.Figure:
+    """Portfolio cumulative P&L, with each trade's own running P&L behind it.
+
+    `sessions` is the stored session calendar. Without it the line spans every
+    hole in the archive, and a flat segment across one is a claim the data
+    cannot support -- that the strategy sat flat, when in truth the simulation
+    had nothing there and the monthly trades that would have run are precisely
+    what this panel exists to show. Absent it, no breaks are drawn: the figure
+    cannot detect a hole it was never told about.
+    """
     if port.empty:
         return empty_figure("Cumulative P&L — all simulated trades",
                             "No simulated trade yet — the first opens on the "
                             "first stored session of a month.")
+    port = break_archive_gaps(port.sort_values("date"), sessions)
     fig = go.Figure()
     if not daily.empty:
         for entry, g in daily.groupby("entry_date", sort=True):
